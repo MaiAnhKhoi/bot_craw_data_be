@@ -32,3 +32,36 @@ class KeywordTranslation(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class KeywordSet(Base):
+    """Một BỘ TỪ KHOÁ có tên, để gọi lại chính xác mà không phải gõ tay.
+
+    Vì sao cần, khi đã có `KeywordTranslation` làm bộ nhớ đệm: khoá đệm là hàm
+    băm của chính bộ từ khoá. Nó bền với đảo thứ tự, hoa/thường và khoảng trắng
+    thừa — nhưng THIẾU MỘT TỪ hoặc SAI MỘT CHỮ là ra một khoá khác, và AI bị gọi
+    lại từ đầu cho MỌI nước.
+
+    Người dùng không có cách nào gõ lại chính xác một bộ mười từ khoá tiếng Việt
+    sau vài tuần. Bảng này giữ nguyên văn bộ đó, nên chọn lại là trúng đệm 100%.
+    Nó KHÔNG lưu bản dịch — bản dịch vẫn nằm ở `keyword_translations`, nối với
+    nhau qua `source_hash`.
+    """
+
+    __tablename__ = "keyword_sets"
+    __table_args__ = (UniqueConstraint("name_key", name="uq_keyword_sets_name"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    # Tên đã chuẩn hoá (thường + gọn khoảng trắng) để so trùng. Lưu riêng thay vì
+    # so bằng `lower(name)` lúc truy vấn: có cột thì ràng buộc UNIQUE mới chặn
+    # được "Trái cây" và "trái cây" cùng tồn tại.
+    name_key: Mapped[str] = mapped_column(String(200), index=True)
+    keywords: Mapped[list] = mapped_column(JSONB, default=list)
+    # Cầu nối sang `keyword_translations`. Lưu sẵn thay vì tính lại mỗi lần đọc,
+    # để câu đếm "đã dịch bao nhiêu nước" chỉ là một phép JOIN.
+    source_hash: Mapped[str] = mapped_column(String(40), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

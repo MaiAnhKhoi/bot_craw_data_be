@@ -493,6 +493,9 @@ type CountryKeywords = {
 | GET | `/keywords/status` | — | `{ ai_available: boolean }` |
 | POST | `/keywords/plan` | `{ keywords, locations?, countries? }` | `{ total, home, cached, need, limit, over_limit, ai_available }` |
 | POST | `/keywords/localize` | `{ keywords, locations?, countries? }` | `{ items: CountryKeywords[], ai_available, warning }` |
+| GET | `/keywords/sets` | — | `KeywordSet[]` — bộ từ khoá đã lưu, mới cập nhật trước |
+| POST | `/keywords/sets` | `{ name, keywords }` | `KeywordSet` — trùng tên thì GHI ĐÈ (không phân biệt hoa thường) |
+| DELETE | `/keywords/sets/{id}` | — | `{ deleted: true }` — CHỈ xoá bộ, giữ nguyên bản dịch |
 | POST | `/keywords/save` | `{ keywords, country_code, language, translated }` | `{ saved: true }` |
 
 `/keywords/plan` và `/keywords/localize` suy ra danh sách quốc gia từ `locations`
@@ -513,6 +516,22 @@ dịch lưu sẵn thì chỉ còn 10 nước cần gọi AI.
 | `cache` | Lấy từ bộ nhớ đệm của lần trước |
 | `user` | Bản người dùng đã sửa tay, AI không ghi đè |
 | `fallback` | Không dịch được → tạm dùng từ khoá gốc, xem `warning` |
+
+```
+KeywordSet = {
+  id, name, keywords: string[]
+  // Mã ISO alpha-2 các nước ĐÃ có bản dịch sẵn cho ĐÚNG bộ này.
+  // Chọn nước nằm trong đây -> KHÔNG tốn lượt gọi AI.
+  translated_countries: string[]
+  created_at, updated_at
+}
+```
+
+Vì sao cần lưu bộ từ khoá khi đã có bộ nhớ đệm: khoá đệm là hàm băm của chính bộ
+từ khoá. Nó BỀN với đảo thứ tự, hoa/thường và khoảng trắng thừa, nhưng VỠ khi
+thiếu một từ hoặc sai một chữ — lúc đó AI bị gọi lại cho MỌI nước. Người dùng
+không thể gõ lại chính xác một bộ mười từ khoá sau vài tuần, nên `keyword_sets`
+giữ nguyên văn để chọn lại là trúng đệm 100%.
 
 **Endpoint này không bao giờ trả lỗi vì AI.** Chưa cấu hình khoá, sai khoá hay quá hạn
 mức đều trả về từ khoá gốc kèm `warning`; người dùng vẫn tạo job được như thường.
