@@ -56,6 +56,10 @@ type JobCreate = {
   keyword_map?: Record<string, string[]>   // từ khoá riêng theo mã quốc gia, vd {"TH": ["fruit wholesaler"]}
   enrich_website?: boolean           // mặc định true — kiểm tra website sống/chết
   ttl_days?: number                  // mặc định 90 — bỏ qua địa điểm đã quét gần đây
+  // mặc định true — bỏ qua luôn cả TRUY VẤN đã chạy xong trong `ttl_days` ngày.
+  // `ttl_days` một mình chỉ tiết kiệm ở pha chi tiết; pha tìm kiếm vẫn cuộn lại
+  // toàn bộ danh sách (1-3 phút/truy vấn) để rồi thấy mọi địa điểm đều đã có.
+  skip_recent_queries?: boolean
 }
 
 type Job = {
@@ -78,15 +82,42 @@ type JobQuery = {
   id: number; query: string
   status: "pending" | "running" | "done" | "failed" | "skipped"
   results_found: number | null; error: string | null
+  // Vì sao vòng cuộn danh sách dừng lại. `results_found` một mình KHÔNG cho biết
+  // địa bàn đã quét hết hay chưa — 95 kết quả kèm "exhausted" là xong, 95 kết quả
+  // kèm "cut_off" là còn sót. null khi truy vấn chưa chạy xong.
+  //   exhausted  Google báo hết danh sách -> đã lấy trọn địa bàn
+  //   cut_off    Google ngừng trả thêm dù còn -> phải chia nhỏ địa bàn
+  //   cap        chạm trần max_results_per_query của chính người dùng
+  //   empty      không có kết quả nào
+  //   unknown    danh sách không hiện ra, không kết luận được
+  //   recent     bỏ qua vì chính truy vấn này vừa chạy xong (status = "skipped")
+  stop_reason: "exhausted" | "cut_off" | "cap" | "empty" | "unknown" | "recent" | null
 }
 
 type JobDetail = Job & { queries: JobQuery[] }
+
+/*
+ * Một ĐỊA BÀN CÒN SÓT. Không phải một dòng job_queries: đây là kết quả gộp mọi
+ * lần chạy của CÙNG MỘT chuỗi truy vấn trên KHẮP các job, rồi chỉ giữ lần quét
+ * gần nhất. Quét 34 tỉnh xong, câu hỏi là "tỉnh nào còn sót" chứ không phải
+ * "job số 12 còn sót gì" — nên `job_id`/`job_name` ở đây là job của lần gần
+ * nhất, dùng để mở ngược về đúng chỗ đã sinh ra con số này.
+ */
+type RemainingArea = {
+  query: string
+  stop_reason: "cut_off" | "cap" | "unknown"
+  results_found: number | null
+  finished_at: string | null
+  job_id: number
+  job_name: string
+}
 ```
 
 | Method | Path | Body / Query | Data |
 |---|---|---|---|
 | POST | `/jobs` | `JobCreate` | `Job` |
 | GET | `/jobs` | `page, size, status?` | `Page<Job>` |
+| GET | `/jobs/remaining-areas` | `page, size, stop_reason?` | `Page<RemainingArea>` |
 | GET | `/jobs/{id}` | — | `JobDetail` |
 | POST | `/jobs/{id}/pause` | — | `Job` |
 | POST | `/jobs/{id}/resume` | — | `Job` |
@@ -110,6 +141,24 @@ data: {"id":12,"status":"done"}
 Chuyển trạng thái hợp lệ: `queued→running→(paused↔running)→done|failed|cancelled`.
 Gọi sai trạng thái trả `JOB_INVALID_STATE` (409).
 
+### GET /jobs/remaining-areas
+
+Những địa bàn Google chưa trả hết mà người dùng còn phải xử — nguồn dữ liệu cho trang
+"Địa bàn còn sót". Trả về `Page<RemainingArea>`, phân trang ở server như mọi danh sách khác.
+
+- `stop_reason` (tuỳ chọn) chỉ nhận `cut_off` | `cap` | `unknown`; bỏ trống là cả ba.
+  Giá trị khác trả `VALIDATION_ERROR` (422) — im lặng trả cả ba khi người dùng gõ nhầm
+  `?stop_reason=cutoff` sẽ khiến họ tin mình đang nhìn đúng một nhóm.
+- Mỗi chuỗi truy vấn chỉ ra MỘT dòng: **lần quét gần nhất** của nó. Chạy lại mà ra
+  `exhausted` thì nó biến mất khỏi danh sách, dù mười lần trước đều `cut_off`.
+- "Lần quét" chỉ tính những dòng có `stop_reason` thuộc
+  `exhausted|cut_off|cap|empty|unknown`. Hai thứ bị loại dù `finished_at` mới hơn:
+  lượt `recent` (bỏ qua, không hề chạm tới Google — mà cơ chế bỏ qua lại coi `cut_off`
+  là "chạy lại cũng ra y hệt", nên đúng những tỉnh còn sót mới hay bị bỏ qua) và
+  `stop_reason = null` (truy vấn lỗi hoặc chưa chạy). Tính hai thứ đó là lần gần nhất
+  thì địa bàn còn sót sẽ lặng lẽ rơi khỏi danh sách đúng lúc nó vẫn còn sót.
+- Sắp xếp: lần quét mới nhất lên đầu.
+
 ## 3. Places
 
 **4 trường bắt buộc theo yêu cầu**: `name` (tên công ty), `address` (vị trí),
@@ -124,7 +173,23 @@ type Place = {
   id: number
   name: string
   address: string | null            // vị trí (địa chỉ đầy đủ nếu đã mở trang chi tiết)
-  phone: string | null              // định dạng quốc gia, vd "090 123 4567"
+  country_code: string | null       // ISO alpha-2, vd "TH"; null với dữ liệu quét trước V0003
+  country_name: string | null       // tên tiếng Việt tra sẵn ở backend, vd "Thái Lan"
+  // NGUỒN đã xác định ra quốc gia — đây là một PHỎNG ĐOÁN, và nguồn cho biết
+  // phỏng đoán đó mạnh tới đâu. Quan trọng vì quốc gia quyết định vùng đọc số
+  // điện thoại NỘI ĐỊA, mà số đọc sai vùng vẫn "hợp lệ" nên không gì báo:
+  //   address  đọc từ tên nước ở đuôi địa chỉ — chắc chắn nhất
+  //   coords   toạ độ nằm trong biên giới nước nào — sai số ~1-2km ở sát biên
+  //   gl       đoán theo nước đang tìm — YẾU NHẤT, nên kiểm lại
+  country_source: "address" | "coords" | "gl" | null
+  // Quốc gia mà SỐ ĐIỆN THOẠI thuộc về. Lệch `country_code` KHÔNG phải lỗi —
+  // doanh nghiệp Thái niêm yết số Việt Nam thường là đầu mối có người Việt.
+  phone_country_code: string | null
+  // Dạng QUỐC TẾ theo quy ước nhóm số của từng nước (libphonenumber):
+  //   "+84 901 234 567"  "+66 2 281 9715"  "+81 3-1234-5678"  "+1 212-555-1234"
+  // Cố ý không dùng dạng nội địa: nó bỏ mã nước đi nên số Bangkok ra
+  // "02 281 9715", người dùng Việt Nam đọc thành số trong nước rồi gọi không được.
+  phone: string | null
   phone_e164: string | null         // "+84901234567"
   phone_valid: boolean | null
   website: string | null
@@ -156,7 +221,23 @@ Mã `liveness_reasons` (FE ánh xạ sang câu tiếng Việt):
 | GET | `/places` | xem bên dưới | `Page<Place>` |
 | GET | `/places/{id}` | — | `Place` |
 | POST | `/places/{id}/reverify` | — | `Place` (đặt lại `pending` để worker quét lại) |
+| GET | `/places/countries` | — | `[{ code, name, count }]` — chỉ những nước CÓ dữ liệu, count giảm dần |
+| GET | `/places/events` | `token` | SSE — xem bên dưới |
 | GET | `/places/export` | như `/places` + `format` + `token` | file tải về |
+
+`GET /places/events` giữ một kết nối và **chỉ bắn tin khi dữ liệu thật sự đổi**:
+
+```
+event: places
+data: { "total": 1234, "max_id": 9876, "last_change": "2026-09-23T04:56:25Z" }
+```
+
+Gói tin CỐ Ý không chứa dòng dữ liệu nào — bảng đang lọc/sắp/phân trang nên chỉ
+server mới biết trang hiện tại gồm những dòng nào. Giao diện nhận tin rồi tự nạp
+lại danh sách. Nhịp bám theo worker: 2 giây khi đang quét, 10 giây khi rảnh (chỉ
+worker mới ghi vào bảng places, worker rảnh thì dữ liệu không thể đổi).
+
+Token đi ở query param vì `EventSource` không gắn được header — giống `/jobs/{id}/events`.
 
 Query lọc dùng chung cho `/places` và `/places/export`:
 
@@ -309,11 +390,20 @@ type CountryKeywords = {
 | Method | Path | Body | Data |
 |---|---|---|---|
 | GET | `/keywords/status` | — | `{ ai_available: boolean }` |
+| POST | `/keywords/plan` | `{ keywords, locations?, countries? }` | `{ total, home, cached, need, limit, over_limit, ai_available }` |
 | POST | `/keywords/localize` | `{ keywords, locations?, countries? }` | `{ items: CountryKeywords[], ai_available, warning }` |
 | POST | `/keywords/save` | `{ keywords, country_code, language, translated }` | `{ saved: true }` |
 
-`/keywords/localize` suy ra danh sách quốc gia từ `locations` (đuôi mỗi dòng), hoặc
-nhận thẳng `countries`. Ý nghĩa `source`:
+`/keywords/plan` và `/keywords/localize` suy ra danh sách quốc gia từ `locations`
+(đuôi mỗi dòng), hoặc nhận thẳng `countries`.
+
+`/keywords/plan` **không gọi AI** — chỉ đếm quốc gia và tra bộ nhớ đệm, nên giao
+diện gọi được mỗi khi người dùng sửa từ khoá/địa điểm. Nó tồn tại để chặn trần
+`BCD_AI_MAX_COUNTRIES` (mặc định 40) TRƯỚC khi bấm nút, thay vì báo sau khi đã
+chờ. Trần tính trên `need` chứ không phải `total`: 60 nước mà 50 nước đã có bản
+dịch lưu sẵn thì chỉ còn 10 nước cần gọi AI.
+
+Ý nghĩa `source` của `/keywords/localize`:
 
 | Giá trị | Nghĩa |
 |---|---|

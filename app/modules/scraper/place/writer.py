@@ -11,6 +11,8 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.modules.geo import borders
+from app.modules.geo import service as geo
 from app.modules.scraper.engine.models import CardResult, DetailResult
 from app.modules.scraper.engine.normalize import normalize_phone
 from app.modules.scraper.place.entity import (
@@ -27,6 +29,88 @@ from app.modules.scraper.place.service import build_search_text, recompute_liven
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def country_of_address(address: str | None) -> str | None:
+    """Mã quốc gia đọc từ ĐUÔI địa chỉ, ví dụ "..., Bangkok 10300, Thailand" -> TH.
+
+    Đây là nguồn đáng tin nhất vì nó là thứ Google tự ghi ra cho chính địa điểm đó,
+    trong khi `gl` chỉ nói ta đã TÌM ở nước nào — hai thứ lệch nhau ở vùng giáp biên.
+    """
+    found = geo.resolve_country(address)
+    return found["code"] if found else None
+
+
+# Độ tin cậy của từng nguồn xác định quốc gia. Số lớn hơn thì thắng.
+#
+#   address  Google tự ghi tên nước ở đuôi địa chỉ CỦA CHÍNH địa điểm đó.
+#            Chắc chắn nhất, nhưng thẻ kết quả thường chỉ cho địa chỉ rút gọn
+#            nên phần lớn thời gian không có.
+#   coords   Toạ độ nằm trong biên giới nước nào. Google cho toạ độ ở MỌI thẻ
+#            (đo thật: 100% số dòng), không phụ thuộc ngôn ngữ hay cách viết
+#            địa chỉ. Sai số cỡ 1-2 km ở sát biên giới.
+#   gl       Chỉ nói ta đã TÌM ở nước nào, KHÔNG nói địa điểm NẰM ở nước nào.
+#            Yếu nhất, chỉ dùng khi không còn gì khác.
+DO_TIN_NGUON = {"address": 3, "coords": 2, "gl": 1}
+
+
+def resolve_place_country(
+    address: str | None,
+    existing: str | None,
+    existing_source: str | None,
+    query_gl: str | None,
+    lat: float | None = None,
+    lng: float | None = None,
+) -> tuple[str | None, str | None]:
+    """Chốt quốc gia của một địa điểm. Trả `(mã ISO alpha-2, nguồn)`.
+
+    Chọn nguồn MẠNH NHẤT đang có chứ không xét theo thứ tự cố định — nhờ vậy một
+    lần quét sau có địa chỉ đầy đủ sẽ nâng cấp được kết luận cũ vốn chỉ suy từ
+    `gl`, còn `gl` thì không bao giờ ghi đè được thứ mạnh hơn.
+
+    Vì sao phải trả kèm NGUỒN: đây là một phỏng đoán, và một phỏng đoán vô hình
+    là thứ nguy hiểm nhất trong dự án này. Đoán sai quốc gia kéo theo đọc sai số
+    điện thoại nội địa, mà số sai vẫn "hợp lệ" nên không ai phát hiện. Lưu nguồn
+    lại thì người dùng lọc ra được đúng những dòng đáng ngờ để soi.
+    """
+    ung_vien: list[tuple[str, str]] = []
+    tu_dia_chi = country_of_address(address)
+    if tu_dia_chi:
+        ung_vien.append((tu_dia_chi, "address"))
+    tu_toa_do = borders.country_at(lat, lng)
+    if tu_toa_do:
+        ung_vien.append((tu_toa_do, "coords"))
+    if existing:
+        ung_vien.append((existing.upper(), existing_source or "gl"))
+    gl = (query_gl or "").strip().upper()
+    if gl:
+        ung_vien.append((gl, "gl"))
+    if not ung_vien:
+        return None, None
+    # `max` giữ phần tử ĐẦU khi bằng điểm, nên thứ tự thêm ở trên cũng là thứ tự
+    # ưu tiên trong cùng một mức tin cậy.
+    return max(ung_vien, key=lambda x: DO_TIN_NGUON.get(x[1], 0))
+
+
+def region_of(place: Place, fallback: str = "VN") -> str:
+    """Vùng dùng để phân tích số điện thoại của địa điểm này.
+
+    KHÔNG được dùng một vùng cố định cho cả job. `phonenumbers` diễn giải số NỘI
+    ĐỊA theo vùng được truyền vào:
+
+        "02 281 9715"  (Bangkok)  vùng VN -> +8422819715   sai, số không tồn tại
+        "081 939 8727" (Bangkok)  vùng VN -> +84819398727  sai NHƯNG HỢP LỆ
+
+    Ca thứ hai mới nguy hiểm: nó qua được `is_valid_number`, hiện màu bình thường
+    trên giao diện và nằm im trong file xuất cho sale gọi.
+
+    Phạm vi ảnh hưởng: chỉ số lấy từ THẺ KẾT QUẢ, vì thẻ ghi số theo dạng nội địa.
+    Trang chi tiết trả về dạng quốc tế ("+6622819715") — có sẵn mã nước nên vùng
+    không còn ý nghĩa. Nghĩa là lỗi này nằm im cho tới khi chạy chế độ
+    `detail_mode=never`, hoặc `missing_only` mà tắt kiểm tra website (khi đó thẻ
+    đã đủ dữ liệu nên worker không mở trang chi tiết nữa).
+    """
+    return (place.country_code or fallback or "VN").upper()
 
 
 def needs_detail(place: Place, detail_mode: str, enrich_website: bool, ttl_days: int) -> bool:
@@ -61,6 +145,18 @@ def needs_detail(place: Place, detail_mode: str, enrich_website: bool, ttl_days:
     # missing_only
     if not place.phone_e164 or not place.address:
         return True
+    # Địa chỉ CHƯA ĐẦY ĐỦ (không đọc ra tên nước ở đuôi) thì mở trang chi tiết.
+    #
+    # Thẻ kết quả chỉ cho địa chỉ rút gọn, và rút gọn tới mức vô dụng: đo thật
+    # trên dữ liệu Chiang Mai ra "1366", ", 201", "109 3 Wang Sing Kam Rd" —
+    # không đủ để tìm ra nơi đó, cũng không đủ để biết nó ở nước nào. Trang chi
+    # tiết luôn cho chuỗi đầy đủ có tên nước.
+    #
+    # Toạ độ đã cứu được phần QUỐC GIA (nên số điện thoại đọc đúng vùng), nhưng
+    # không cứu được phần ĐỊA CHỈ — mà địa chỉ là một trong bốn trường nghiệp vụ
+    # bắt buộc. Hai việc khác nhau, không thay thế cho nhau được.
+    if not country_of_address(place.address):
+        return True
     if not place.detail_scraped:
         # Website chỉ có trên trang chi tiết, thẻ kết quả không bao giờ có —
         # nên chỉ mở khi người dùng thật sự cần website.
@@ -74,11 +170,18 @@ def needs_detail(place: Place, detail_mode: str, enrich_website: bool, ttl_days:
 class PlaceWriter:
     def __init__(self, db: Session, region: str = "VN") -> None:
         self.db = db
+        # `region` chỉ là PHƯƠNG ÁN DỰ PHÒNG cho địa điểm chưa biết quốc gia.
+        # Vùng thật sự dùng để đọc số điện thoại nằm ở `region_of(place)`.
         self.region = region
 
     # ----- pha tìm kiếm -----
-    def upsert_from_card(self, card: CardResult, job_id: int, keyword: str) -> tuple[Place, bool]:
-        """Tạo mới hoặc làm tươi một địa điểm từ thẻ kết quả. Trả (place, có phải mới không)."""
+    def upsert_from_card(
+        self, card: CardResult, job_id: int, keyword: str, country_code: str | None = None
+    ) -> tuple[Place, bool]:
+        """Tạo mới hoặc làm tươi một địa điểm từ thẻ kết quả. Trả (place, có phải mới không).
+
+        `country_code` là quốc gia của TRUY VẤN đã tìm ra thẻ này (`JobQuery.gl`).
+        """
         if not card.feature_id:
             # Không có định danh của Google thì không có cách khử trùng lặp đáng tin;
             # dùng URL làm khoá thay thế.
@@ -101,6 +204,17 @@ class PlaceWriter:
         # Địa chỉ từ thẻ là bản RÚT GỌN; chỉ dùng khi chưa có địa chỉ đầy đủ.
         if not place.address and card.address_short:
             place.address = card.address_short
+        # Quốc gia phải chốt TRƯỚC khi đọc số điện thoại ở dưới, và phải chốt SAU
+        # khi đã gán lat/lng ở trên — toạ độ là nguồn mạnh thứ hai.
+        nuoc_cu = place.country_code
+        place.country_code, place.country_source = resolve_place_country(
+            place.address,
+            place.country_code,
+            place.country_source,
+            country_code,
+            place.lat,
+            place.lng,
+        )
         if card.rating is not None:
             place.rating = card.rating
         if card.review_count is not None:
@@ -110,9 +224,21 @@ class PlaceWriter:
         if card.hours_summary:
             place.hours_summary = card.hours_summary
             place.has_hours = place.has_hours or card.has_hours
+        vung = region_of(place, self.region)
         if card.phone_raw and not place.phone_e164:
             place.phone_raw = card.phone_raw
-            e164, national, valid = normalize_phone(card.phone_raw, self.region)
+            e164, national, valid = normalize_phone(card.phone_raw, vung)
+            place.phone_e164, place.phone_national, place.phone_valid = e164, national, valid
+        elif place.phone_raw and place.country_code != nuoc_cu:
+            # Quốc gia VỪA ĐỔI trong chính lượt này (thường là toạ độ hoặc địa chỉ
+            # đầy đủ vừa sửa lại một kết luận trước đó chỉ đoán theo `gl`).
+            #
+            # Không có nhánh này thì số đã lưu nằm im với vùng CŨ vĩnh viễn: điều
+            # kiện `not place.phone_e164` ở trên khiến nó không bao giờ được đọc
+            # lại. Và số đọc sai vùng vẫn "hợp lệ" — "081 882 1104" đọc theo VN ra
+            # +84818821104 hợp lệ y như đọc theo TH ra +66818821104 — nên không có
+            # bộ kiểm tra nào báo, nó chỉ lặng lẽ nằm trong file xuất cho sale gọi.
+            e164, national, valid = normalize_phone(place.phone_raw, vung)
             place.phone_e164, place.phone_national, place.phone_valid = e164, national, valid
 
         place.last_seen_at = _now()
@@ -170,9 +296,28 @@ class PlaceWriter:
         place.hours_summary = detail.hours_summary or place.hours_summary
         place.has_hours = detail.has_hours or place.has_hours
 
+        # Chốt lại quốc gia SAU khi đã có địa chỉ đầy đủ và toạ độ chính xác từ
+        # trang chi tiết — đây là lúc dữ liệu đầy đủ nhất, nên kết luận ở đây
+        # thường nâng cấp được bản suy từ `gl` lúc đọc thẻ.
+        place.country_code, place.country_source = resolve_place_country(
+            place.address,
+            place.country_code,
+            place.country_source,
+            self.region,
+            place.lat,
+            place.lng,
+        )
+
+        region = region_of(place, self.region)
         if detail.phone_raw:
             place.phone_raw = detail.phone_raw
-            e164, national, valid = normalize_phone(detail.phone_raw, self.region)
+            e164, national, valid = normalize_phone(detail.phone_raw, region)
+            place.phone_e164, place.phone_national, place.phone_valid = e164, national, valid
+        elif place.phone_raw:
+            # Trang chi tiết không cho SĐT mới, nhưng quốc gia có thể VỪA đổi ngay
+            # ở trên (thẻ kết quả chỉ đoán theo `gl`, giờ mới có địa chỉ đầy đủ).
+            # Không đọc lại thì số đã phân tích sai vùng sẽ nằm lại vĩnh viễn.
+            e164, national, valid = normalize_phone(place.phone_raw, region)
             place.phone_e164, place.phone_national, place.phone_valid = e164, national, valid
 
         place.missing_fields = list(detail.missing_fields)
@@ -227,6 +372,51 @@ class PlaceWriter:
             )
             .scalars()
             .first()
+        )
+
+    def close_pending_of_job(self, job_id: int) -> int:
+        """Chốt sổ những địa điểm còn dang dở của một job vừa bị HUỶ.
+
+        Huỷ job phải có nghĩa là NGỪNG tiêu request vào nó. Nhưng địa điểm mà
+        pha tìm kiếm đã tạo ra vẫn nằm ở `pending`, và vòng `run_sweep_phase`
+        (vốn sinh ra cho nút "Kiểm tra lại") sẽ nhặt đúng chúng lên quét tiếp —
+        tức là nút Huỷ bị vô hiệu hoá một cách âm thầm. Đã thấy thật: huỷ job
+        #617 xong worker vẫn đi mở 46 trang chi tiết của nó.
+
+        Chốt bằng dữ liệu đang có (`finish_without_detail`) chứ không xoá: thẻ
+        kết quả đã cho tên, vị trí, SĐT — vứt đi là phí một lượt quét đã trả tiền.
+        """
+        so = 0
+        for place in self.places_of_job(job_id, (PLACE_PENDING,)):
+            self.finish_without_detail(place)
+            so += 1
+        return so
+
+    def next_pending_anywhere(self) -> Place | None:
+        """Một địa điểm đang `pending` bất kể thuộc job nào.
+
+        Phục vụ nút "Kiểm tra lại": nó đặt địa điểm về `pending`, nhưng pha chi
+        tiết chỉ lấy việc qua `next_pending_of_job(job_id)` — tức chỉ trong job
+        ĐANG CHẠY. Địa điểm thuộc một job đã `done` thì không worker nào đụng
+        tới, nằm ở `pending` vĩnh viễn, và cái toast "đã đưa vào hàng chờ" là
+        lời hứa suông.
+        """
+        return (
+            self.db.execute(
+                select(Place)
+                .where(Place.status == PLACE_PENDING)
+                .order_by(Place.id)
+                .limit(1)
+            )
+            .scalars()
+            .first()
+        )
+
+    def count_pending_anywhere(self) -> int:
+        return int(
+            self.db.execute(
+                select(func.count(Place.id)).where(Place.status == PLACE_PENDING)
+            ).scalar_one()
         )
 
     def count_places_of_job(self, job_id: int) -> int:

@@ -29,6 +29,7 @@ from app.modules.scraper.engine.browser import (
     new_page,
 )
 from app.modules.scraper.engine.detail import DetailParseError, scrape_detail
+from app.modules.scraper.engine.models import STOP_RECENT
 from app.modules.scraper.engine.pacing import Pacer, in_night_rest
 from app.modules.scraper.engine.search import search_query
 from app.modules.scraper.engine.website import check_many
@@ -41,7 +42,7 @@ from app.modules.scraper.job.entity import (
 )
 from app.modules.scraper.job.repository import JobRepository
 from app.modules.scraper.place.entity import Place
-from app.modules.scraper.place.writer import PlaceWriter, needs_detail
+from app.modules.scraper.place.writer import PlaceWriter, needs_detail, region_of
 from app.modules.scraper.status.repository import WorkerStatusRepository
 
 _stop = asyncio.Event()
@@ -145,24 +146,46 @@ class Runner:
     async def run_search_phase(self, page, job_id: int, params: dict) -> None:  # noqa: ANN001
         self.phase = "search"
         self._bump_job(job_id, phase="search")
+        ttl_days = int(params.get("ttl_days", 90))
+        skip_recent = bool(params.get("skip_recent_queries", True))
         while True:
             self._assert_job_runnable(job_id)
             db = SessionLocal()
             try:
-                jq = JobRepository(db).next_pending_query(job_id)
+                repo = JobRepository(db)
+                jq = repo.next_pending_query(job_id)
                 if jq is None:
                     return
-                jq.status = "running"
-                jq.started_at = datetime.now(UTC)
                 query_text = jq.query
                 query_id = jq.id
                 query_hl, query_gl = jq.hl, jq.gl
+                da_quet_luc = (
+                    repo.recently_scraped_at(query_text, ttl_days, query_id, query_gl)
+                    if skip_recent
+                    else None
+                )
+                if da_quet_luc is not None:
+                    jq.status = "skipped"
+                    jq.stop_reason = STOP_RECENT
+                    jq.results_found = 0
+                    jq.finished_at = datetime.now(UTC)
+                else:
+                    jq.status = "running"
+                    jq.started_at = datetime.now(UTC)
                 db.commit()
             finally:
                 db.close()
 
+            if da_quet_luc is not None:
+                logger.info("[{}] bỏ qua — đã quét xong lúc {}", query_text, da_quet_luc)
+                self._bump_job(job_id, inc_done_queries=1)
+                # KHÔNG gọi `pacer.wait()`: giãn nhịp là để Google khỏi nghi ngờ,
+                # mà lượt này không hề chạm tới Google. Ngủ ở đây thì cơ chế bỏ
+                # qua mất sạch ý nghĩa — 3.000 truy vấn bỏ qua vẫn tốn cả giờ.
+                continue
+
             try:
-                cards = await search_query(
+                outcome = await search_query(
                     page,
                     query_text,
                     self.s,
@@ -170,6 +193,7 @@ class Runner:
                     hl=query_hl,
                     gl=query_gl,
                 )
+                cards = outcome.cards
             except BlockedError as exc:
                 self._reset_query(query_id, "pending")
                 await self._handle_block(job_id, exc)
@@ -187,7 +211,11 @@ class Runner:
             try:
                 writer = PlaceWriter(db, params.get("region", "VN"))
                 for card in cards:
-                    _, is_new = writer.upsert_from_card(card, job_id, query_text)
+                    # `query_gl` là quốc gia đã tìm ra thẻ này — dùng để đọc đúng
+                    # số điện thoại nội địa khi địa chỉ chưa đủ để suy ra nước.
+                    _, is_new = writer.upsert_from_card(
+                        card, job_id, query_text, country_code=query_gl
+                    )
                     new_count += int(is_new)
                 # Đếm theo số liên kết job-địa điểm THẬT, không cộng dồn len(cards):
                 # nhiều truy vấn giao nhau sẽ trả về cùng một địa điểm, cộng dồn sẽ
@@ -196,7 +224,9 @@ class Runner:
             finally:
                 db.close()
 
-            self._reset_query(query_id, "done", results_found=len(cards))
+            self._reset_query(
+                query_id, "done", results_found=len(cards), stop_reason=outcome.stop_reason
+            )
             self._bump_job(
                 job_id,
                 inc_done_queries=1,
@@ -208,7 +238,12 @@ class Runner:
             await self.pacer.wait()
 
     def _reset_query(
-        self, query_id: int, status: str, error: str | None = None, results_found: int | None = None
+        self,
+        query_id: int,
+        status: str,
+        error: str | None = None,
+        results_found: int | None = None,
+        stop_reason: str | None = None,
     ) -> None:
         db = SessionLocal()
         try:
@@ -221,6 +256,9 @@ class Runner:
             jq.error = (error or None) if error else None
             if results_found is not None:
                 jq.results_found = results_found
+            # Xoá lý do cũ khi truy vấn được đưa về hàng chờ, nếu không bản chạy lại
+            # sẽ mang nhãn của lần chạy trước.
+            jq.stop_reason = stop_reason
             if status in ("done", "failed"):
                 jq.finished_at = datetime.now(UTC)
             db.commit()
@@ -325,6 +363,93 @@ class Runner:
             db.close()
         self.heartbeat()
 
+    # ---------- kiểm tra lại các địa điểm lẻ ----------
+    async def run_sweep_phase(self, toi_da: int = 20) -> int:
+        """Quét lại những địa điểm đang `pending` mà không thuộc job nào đang chạy.
+
+        Nút "Kiểm tra lại" trên giao diện đặt địa điểm về `pending`. Nhưng pha
+        chi tiết chỉ lấy việc qua `next_pending_of_job(job_id)` — tức chỉ trong
+        job ĐANG CHẠY. Địa điểm thuộc một job đã xong thì không ai đụng tới, nằm
+        ở `pending` vĩnh viễn, và bộ đếm `pending` trên trang Tổng quan cứ phình
+        lên. Vòng này là nơi duy nhất nhận số việc đó.
+
+        Chỉ chạy khi worker RẢNH, và mỗi lượt giới hạn `toi_da` để job mới tạo
+        không phải chờ hết hàng kiểm tra lại mới được chạy.
+        """
+        self.phase = "sweep"
+        da_lam = 0
+        async with launch_context(self.s) as ctx:
+            page = await new_page(ctx, self.s.page_timeout_ms)
+            while da_lam < toi_da and not _stop.is_set():
+                db = SessionLocal()
+                try:
+                    place = PlaceWriter(db).next_pending_anywhere()
+                    if place is None:
+                        break
+                    place_id, url, name = place.id, place.maps_url, place.name
+                    # Không truyền phương án dự phòng của job: vòng này chạy
+                    # ngoài mọi job, và `Settings` không có `region`. Địa điểm
+                    # lấy từ DB thì gần như luôn đã có `country_code` rồi.
+                    region = region_of(place)
+                finally:
+                    db.close()
+
+                if not url:
+                    # Không có URL thì không quét lại được; chốt bằng dữ liệu đang
+                    # có để nó thoát khỏi `pending` thay vì kẹt lại mãi.
+                    db = SessionLocal()
+                    try:
+                        target = db.get(Place, place_id)
+                        if target is not None:
+                            PlaceWriter(db, region).finish_without_detail(target)
+                    finally:
+                        db.close()
+                    da_lam += 1
+                    continue
+
+                try:
+                    detail = await scrape_detail(page, url, self.s.page_timeout_ms)
+                except BlockedError as exc:
+                    logger.error("Kiểm tra lại bị chặn: {}", exc)
+                    self.pacer.on_block()
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Kiểm tra lại '{}' lỗi: {}", name, exc)
+                    self.pacer.on_suspicion()
+                    self._fail_place(place_id, region, f"{type(exc).__name__}: {exc}")
+                    da_lam += 1
+                    await self.pacer.wait()
+                    continue
+
+                db = SessionLocal()
+                try:
+                    target = db.get(Place, place_id)
+                    if target is not None:
+                        PlaceWriter(db, region).apply_detail(target, detail)
+                finally:
+                    db.close()
+
+                self.recent_pages.append(datetime.now(UTC))
+                self.pacer.on_success()
+                da_lam += 1
+                self.heartbeat()
+                await self.pacer.wait()
+        if da_lam:
+            logger.info("Đã kiểm tra lại {} địa điểm", da_lam)
+        return da_lam
+
+    def _so_diem_cho_kiem_lai(self) -> int:
+        """Đếm trước khi mở trình duyệt — mở Chromium tốn ~1 giây, không đáng bỏ
+        ra chỉ để phát hiện là chẳng có việc gì."""
+        db = SessionLocal()
+        try:
+            return PlaceWriter(db).count_pending_anywhere()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Đếm địa điểm chờ kiểm tra lỗi: {}", exc)
+            return 0
+        finally:
+            db.close()
+
     # ---------- một job ----------
     async def process_job(self, job_id: int) -> None:
         params = self._assert_job_runnable(job_id)
@@ -368,10 +493,18 @@ class Runner:
                 db.close()
 
             if job_id is None:
-                self.phase = "idle"
                 self.current_job_id = None
+                # Rảnh job thì mới quay sang hàng chờ "kiểm tra lại".
+                da_lam = 0
+                if self._so_diem_cho_kiem_lai():
+                    try:
+                        da_lam = await self.run_sweep_phase()
+                    except Exception as exc:  # noqa: BLE001 — không được giết worker
+                        logger.warning("Vòng kiểm tra lại lỗi: {}", exc)
+                self.phase = "idle"
                 self.heartbeat()
-                await asyncio.sleep(self.s.worker_poll_seconds)
+                if not da_lam:
+                    await asyncio.sleep(self.s.worker_poll_seconds)
                 continue
 
             self.current_job_id = job_id

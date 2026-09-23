@@ -53,6 +53,18 @@ class Place(Base):
     # --- 4 trường nghiệp vụ ---
     name: Mapped[str] = mapped_column(String(300))
     address: Mapped[str | None] = mapped_column(Text)            # vị trí
+    # Mã quốc gia ISO alpha-2. Hai việc phụ thuộc vào nó:
+    #  1. Hiện cột "Quốc gia" — địa chỉ bị cắt trong bảng nên nhìn không ra nước nào.
+    #  2. Vùng để phân tích số điện thoại. Đây mới là chỗ quan trọng: cùng một
+    #     chuỗi "02 281 9715" đọc theo VN ra +8422819715 (sai, số rác), đọc theo
+    #     TH ra +6622819715 (đúng). Xem `writer.region_of`.
+    country_code: Mapped[str | None] = mapped_column(String(2), index=True)
+    # NGUỒN đã xác định ra `country_code`: 'address' | 'coords' | 'gl' | NULL.
+    # Tồn tại để biến một PHỎNG ĐOÁN VÔ HÌNH thành phỏng đoán nhìn thấy được.
+    # 'gl' nghĩa là "đoán theo nước đang tìm" — yếu nhất, và cũng là dòng đáng
+    # soi lại nhất vì quốc gia sai kéo theo số điện thoại nội địa đọc sai vùng,
+    # mà số sai đó vẫn qua được mọi bộ kiểm tra.
+    country_source: Mapped[str | None] = mapped_column(String(8), index=True)
     phone_raw: Mapped[str | None] = mapped_column(String(64))
     phone_e164: Mapped[str | None] = mapped_column(String(32))
     phone_national: Mapped[str | None] = mapped_column(String(32))

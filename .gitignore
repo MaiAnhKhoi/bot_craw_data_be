@@ -26,6 +26,11 @@ venv/
 # file xuất (DỮ LIỆU KHÁCH HÀNG) và log. Toàn bộ sinh ra lúc chạy, không phải mã nguồn.
 var/
 *.log
+# Bản dump của service `backup`: một file .dump là BẢN SAO ĐẦY ĐỦ của toàn bộ DB — dữ
+# liệu khách hàng, kèm cả bảng users với hash mật khẩu. Đẩy lên GitHub là phát tán toàn
+# bộ cơ sở dữ liệu trong một lần commit, và Git thì không quên. Dấu / ở đầu theo đúng
+# luật của nhóm dưới cùng file: chỉ chặn thư mục backups ở gốc repo.
+/backups/
 
 # --- Cache công cụ ---
 .pytest_cache/

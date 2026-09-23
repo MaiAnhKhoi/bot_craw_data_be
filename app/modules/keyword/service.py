@@ -69,6 +69,38 @@ class KeywordService:
         ).scalars().all()
         return {r.country_code: r for r in rows}
 
+    def plan(self, keywords: list[str], countries: list[dict]) -> dict:
+        """Xem trước một lượt dịch sẽ tốn bao nhiêu, KHÔNG gọi AI.
+
+        Có endpoint riêng vì trần `ai_max_countries` phải chặn TRƯỚC khi người
+        dùng bấm nút, không phải báo lỗi sau khi đã chờ. Và trần đó tính trên số
+        quốc gia THẬT SỰ CẦN GỌI AI: 60 nước mà 40 nước đã có sẵn trong bộ nhớ
+        đệm thì chỉ còn 20 nước cần dịch, chặn ở con số 60 là chặn oan.
+        """
+        keywords = normalize(keywords)
+        settings = get_settings()
+        limit = settings.ai_max_countries
+        if not keywords:
+            return {
+                "total": len(countries), "home": [], "cached": [], "need": [],
+                "limit": limit, "over_limit": False, "ai_available": ai.is_enabled(),
+            }
+
+        home = [c["code"] for c in countries if c["code"] == HOME_COUNTRY]
+        foreign = [c for c in countries if c["code"] != HOME_COUNTRY]
+        da_co = self._cached(source_hash(keywords), [c["code"] for c in foreign])
+        cached = [c["code"] for c in foreign if c["code"] in da_co]
+        need = [c["code"] for c in foreign if c["code"] not in da_co]
+        return {
+            "total": len(countries),
+            "home": home,
+            "cached": cached,
+            "need": need,
+            "limit": limit,
+            "over_limit": len(need) > limit,
+            "ai_available": ai.is_enabled(),
+        }
+
     def localize(self, keywords: list[str], countries: list[dict]) -> tuple[list[dict], str | None]:
         """Trả (danh sách gợi ý theo quốc gia, cảnh báo nếu có).
 

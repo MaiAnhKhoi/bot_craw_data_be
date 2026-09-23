@@ -14,7 +14,11 @@ from app.core.response import ApiResponse
 from app.modules.identity.entity import User
 from app.modules.scraper.job.entity import JOB_CANCELLED, JOB_DONE, JOB_FAILED
 from app.modules.scraper.job.request import JobCreateRequest
-from app.modules.scraper.job.response import JobDetailResponse, JobResponse
+from app.modules.scraper.job.response import (
+    JobDetailResponse,
+    JobResponse,
+    RemainingAreaResponse,
+)
 from app.modules.scraper.job.service import JobService, rate_per_min
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -39,6 +43,28 @@ def list_jobs(
     _: User = Depends(current_user),
 ) -> ApiResponse[Page[JobResponse]]:
     return ApiResponse.ok(JobService(db).list(params, status))
+
+
+@router.get(
+    "/remaining-areas",
+    response_model=ApiResponse[Page[RemainingAreaResponse]],
+    summary="Địa bàn còn sót — truy vấn cần chia nhỏ hoặc chạy lại",
+)
+def list_remaining_areas(
+    params: PageParams = Depends(page_params),
+    stop_reason: str | None = Query(
+        None, description="Lọc theo lý do dừng: cut_off | cap | unknown. Bỏ trống = cả ba."
+    ),
+    db: Session = Depends(get_db),
+    _: User = Depends(current_user),
+) -> ApiResponse[Page[RemainingAreaResponse]]:
+    """PHẢI khai TRƯỚC `/{job_id}`.
+
+    FastAPI so khớp route theo thứ tự khai báo, nên nếu đứng sau thì
+    `GET /jobs/remaining-areas` rơi vào `/{job_id}` và chết ở bước ép kiểu
+    `job_id: int` — trả 422 cho một đường dẫn hoàn toàn đúng.
+    """
+    return ApiResponse.ok(JobService(db).remaining_areas(params, stop_reason))
 
 
 @router.get("/{job_id}", response_model=ApiResponse[JobDetailResponse], summary="Chi tiết job")

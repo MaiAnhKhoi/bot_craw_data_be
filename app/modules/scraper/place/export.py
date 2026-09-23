@@ -16,6 +16,8 @@ from pathlib import Path
 
 import xlsxwriter
 
+from app.modules.geo import service as geo
+from app.modules.scraper.engine.normalize import phone_country, to_international
 from app.modules.scraper.place.entity import Place
 
 LIVENESS_VI = {
@@ -46,11 +48,22 @@ WEBSITE_STATUS_VI = {
     "NONE": "Không có",
 }
 
+NGUON_QUOC_GIA_VI = {
+    "address": "Địa chỉ",
+    "coords": "Toạ độ",
+    "gl": "Đoán theo nước đang tìm",
+}
+
 # (tiêu đề cột, hàm lấy giá trị, độ rộng)
 COLUMNS: tuple[tuple[str, Callable[[Place, list[str]], object], int], ...] = (
     ("Tên công ty", lambda p, k: p.name, 42),
     ("Vị trí", lambda p, k: p.address, 50),
-    ("Số điện thoại", lambda p, k: p.phone_national or p.phone_raw, 18),
+    ("Quốc gia", lambda p, k: geo.country_name(p.country_code), 16),
+    # Cột này để người dùng biết dòng nào là PHỎNG ĐOÁN yếu mà soi lại.
+    ("Nguồn quốc gia", lambda p, k: NGUON_QUOC_GIA_VI.get(p.country_source or "", ""), 20),
+    # Dạng quốc tế: file xuất đi ra ngoài phần mềm này, mất mã nước là mất luôn
+    # thông tin gọi đi nước nào — và số Thái trông y hệt số Việt Nam.
+    ("Số điện thoại", lambda p, k: to_international(p.phone_e164, p.phone_national or p.phone_raw), 20),
     ("Website", lambda p, k: p.website, 34),
     ("Tình trạng", lambda p, k: LIVENESS_VI.get(p.liveness_label, p.liveness_label), 22),
     ("Điểm tình trạng", lambda p, k: p.liveness_score, 15),
@@ -123,7 +136,16 @@ def export_json(places: Iterable[Place], keywords: dict[int, list[str]], path: P
                     {
                         "name": p.name,
                         "address": p.address,
-                        "phone": p.phone_national or p.phone_raw,
+                        "country_code": p.country_code,
+                        "country_name": geo.country_name(p.country_code),
+                        "country_source": p.country_source,
+                        "phone_country_code": phone_country(p.phone_e164),
+                        # Dạng QUỐC TẾ, giống hệt cột Excel/CSV. Dùng
+                        # `phone_national` ở đây là tái tạo lại đúng cái lỗi mà cả
+                        # module này sinh ra để chống: "081 939 8727" của Bangkok
+                        # là đầu số Vinaphone khi đọc như số Việt Nam, và JSON
+                        # không có cột quốc gia nào để phân biệt.
+                        "phone": to_international(p.phone_e164, p.phone_national or p.phone_raw),
                         "phone_e164": p.phone_e164,
                         "website": p.website,
                         "liveness_label": p.liveness_label,

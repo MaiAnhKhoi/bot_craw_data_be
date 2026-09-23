@@ -15,9 +15,13 @@ from app.modules.scraper.job.entity import (
     JOB_RUNNING,
     ScrapeJob,
 )
-from app.modules.scraper.job.repository import JobRepository
+from app.modules.scraper.job.repository import CAN_HANH_DONG, JobRepository
 from app.modules.scraper.job.request import JobCreateRequest
-from app.modules.scraper.job.response import JobDetailResponse, JobResponse
+from app.modules.scraper.job.response import (
+    JobDetailResponse,
+    JobResponse,
+    RemainingAreaResponse,
+)
 
 
 @dataclass(frozen=True)
@@ -122,6 +126,24 @@ class JobService:
         rows, total = self.repo.list(params, status)
         return Page.build([JobResponse.of(j, rate_per_min(j)) for j in rows], params, total)
 
+    def remaining_areas(
+        self, params: PageParams, stop_reason: str | None
+    ) -> Page[RemainingAreaResponse]:
+        """Danh sách địa bàn còn sót, gộp theo truy vấn trên mọi job.
+
+        Lý do dừng lạ thì BÁO LỖI chứ không lặng lẽ trả về danh sách đầy đủ:
+        gõ nhầm `?stop_reason=cutoff` mà vẫn thấy dữ liệu về là người dùng tin
+        rằng mình đang nhìn đúng một nhóm, trong khi đang nhìn cả ba.
+        """
+        if stop_reason and stop_reason not in CAN_HANH_DONG:
+            raise AppError(
+                f"stop_reason phải là một trong {' | '.join(CAN_HANH_DONG)}",
+                code="VALIDATION_ERROR",
+                status_code=422,
+            )
+        rows, total = self.repo.list_remaining_areas(params, stop_reason)
+        return Page.build([RemainingAreaResponse.of(r) for r in rows], params, total)
+
     # ----- đổi trạng thái -----
     def _transition(self, job_id: int, target: str, allowed_from: tuple[str, ...]) -> JobResponse:
         job = self.repo.by_id(job_id)
@@ -137,6 +159,11 @@ class JobService:
         if target == JOB_CANCELLED:
             job.finished_at = datetime.now(UTC)
             job.phase = "idle"
+            # Chốt sổ địa điểm còn dang dở, nếu không vòng "kiểm tra lại" của
+            # worker sẽ nhặt chúng lên quét tiếp và nút Huỷ thành vô nghĩa.
+            from app.modules.scraper.place.writer import PlaceWriter
+
+            PlaceWriter(self.db).close_pending_of_job(job_id)
         self.db.commit()
         self.db.refresh(job)
         return JobResponse.of(job, rate_per_min(job))
