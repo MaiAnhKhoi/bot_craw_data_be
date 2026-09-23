@@ -184,7 +184,11 @@ def test_tao_job_nhan_to_hop_va_khu_trung_lap(client, auth, throwaway_jobs):
     throwaway_jobs.append(job["id"])
     assert job["total_queries"] == 4        # 2 từ khoá (đã khử trùng) x 2 địa điểm
     queries = [q["query"] for q in client.get(f"/api/v1/jobs/{job['id']}", headers=auth).json()["data"]["queries"]]
-    assert queries == ["a q1", "a q3", "b q1", "b q3"]
+    # Gom theo ĐỊA ĐIỂM trước, từ khoá sau: mọi từ khoá của cùng một nơi chạy liền
+    # nhau. Nhờ vậy hl/gl và bối cảnh địa lý giữ nguyên qua các truy vấn kề nhau
+    # (trông tự nhiên hơn là nhảy qua lại giữa các nước), và job bị huỷ giữa chừng
+    # thì vẫn phủ TRỌN VẸN vài địa bàn thay vì phủ dở dang khắp nơi.
+    assert queries == ["a q1", "b q1", "a q3", "b q3"]
 
 
 def test_tao_job_khong_co_tu_khoa_bi_tu_choi(client, auth):

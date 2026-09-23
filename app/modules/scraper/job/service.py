@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppError, NotFoundError
 from app.core.pagination import Page, PageParams
+from app.modules.geo import service as geo
 from app.modules.scraper.job.entity import (
     JOB_CANCELLED,
     JOB_PAUSED,
@@ -18,19 +20,56 @@ from app.modules.scraper.job.request import JobCreateRequest
 from app.modules.scraper.job.response import JobDetailResponse, JobResponse
 
 
-def expand_queries(keywords: list[str], locations: list[str] | None) -> list[str]:
-    """từ khoá × địa điểm, giữ thứ tự và bỏ trùng.
+@dataclass(frozen=True)
+class ExpandedQuery:
+    """Một truy vấn đã mở rộng, kèm ngôn ngữ/quốc gia riêng của nó."""
+
+    query: str
+    hl: str
+    gl: str
+
+
+def expand_queries(
+    keywords: list[str],
+    locations: list[str] | None,
+    keyword_map: dict[str, list[str]] | None = None,
+    default_locale: tuple[str, str] = ("vi", "vn"),
+) -> list[ExpandedQuery]:
+    """từ khoá × địa điểm, kèm ngôn ngữ/quốc gia tìm kiếm cho từng truy vấn.
 
     Đây là cách duy nhất vượt trần ~120 kết quả mỗi truy vấn của Google: chia nhỏ
     địa bàn ra thành nhiều truy vấn hẹp hơn.
+
+    Hai điều làm ở đây mà nơi khác không làm được:
+    1. Địa điểm ở nước nào thì dùng TỪ KHOÁ của nước đó (`keyword_map`) — từ khoá
+       tiếng Việt gần như vô dụng ngoài Việt Nam.
+    2. Mỗi truy vấn mang `hl`/`gl` riêng theo quốc gia của nó. Dùng chung một giá
+       trị cho cả job là sai ngay khi job trải nhiều nước.
     """
     kws = [k.strip() for k in keywords if k and k.strip() and not k.strip().startswith("#")]
     locs = [x.strip() for x in (locations or []) if x and x.strip() and not x.strip().startswith("#")]
-    out: list[str] = []
-    for k in kws:
-        for q in ([f"{k} {loc}" for loc in locs] if locs else [k]):
-            if q not in out:
-                out.append(q)
+    keyword_map = {k.upper(): v for k, v in (keyword_map or {}).items() if v}
+
+    out: list[ExpandedQuery] = []
+    seen: set[str] = set()
+
+    def add(text: str, hl: str, gl: str) -> None:
+        if text not in seen:
+            seen.add(text)
+            out.append(ExpandedQuery(query=text, hl=hl, gl=gl))
+
+    if not locs:
+        for k in kws:
+            add(k, *default_locale)
+        return out
+
+    for loc in locs:
+        country = geo.resolve_country(loc)
+        code = country["code"] if country else None
+        hl, gl = geo.locale_for(code) if code else default_locale
+        local_kws = keyword_map.get(code or "", []) or kws
+        for k in local_kws:
+            add(f"{k} {loc}", hl, gl)
     return out
 
 
@@ -51,7 +90,12 @@ class JobService:
         self.repo = JobRepository(db)
 
     def create(self, payload: JobCreateRequest) -> JobResponse:
-        queries = expand_queries(payload.keywords, payload.locations)
+        queries = expand_queries(
+            payload.keywords,
+            payload.locations,
+            payload.keyword_map,
+            default_locale=(payload.hl, payload.gl),
+        )
         if not queries:
             raise AppError("Cần ít nhất một từ khoá hợp lệ", code="VALIDATION_ERROR", status_code=422)
         job = self.repo.add(

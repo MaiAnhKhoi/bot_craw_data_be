@@ -156,13 +156,19 @@ class Runner:
                 jq.started_at = datetime.now(UTC)
                 query_text = jq.query
                 query_id = jq.id
+                query_hl, query_gl = jq.hl, jq.gl
                 db.commit()
             finally:
                 db.close()
 
             try:
                 cards = await search_query(
-                    page, query_text, self.s, int(params.get("max_results_per_query", 200))
+                    page,
+                    query_text,
+                    self.s,
+                    int(params.get("max_results_per_query", 200)),
+                    hl=query_hl,
+                    gl=query_gl,
                 )
             except BlockedError as exc:
                 self._reset_query(query_id, "pending")

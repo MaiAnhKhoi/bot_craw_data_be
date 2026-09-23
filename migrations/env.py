@@ -14,6 +14,7 @@ from app.core.database import Base
 
 # --- Nạp entity (thứ tự không quan trọng, nhưng phải đủ) ---
 from app.modules.identity.entity import User  # noqa: F401
+from app.modules.keyword.entity import KeywordTranslation  # noqa: F401
 from app.modules.scraper.job.entity import JobQuery, ScrapeJob  # noqa: F401
 from app.modules.scraper.place.entity import JobPlace, Place, PlaceKeyword  # noqa: F401
 from app.modules.scraper.status.entity import WorkerStatus  # noqa: F401

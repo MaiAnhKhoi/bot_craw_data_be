@@ -53,6 +53,7 @@ type JobCreate = {
   region?: string                    // "VN" — dùng chuẩn hoá SĐT
   max_results_per_query?: number     // mặc định 200
   detail_mode?: "always" | "missing_only" | "never"   // mặc định "missing_only"
+  keyword_map?: Record<string, string[]>   // từ khoá riêng theo mã quốc gia, vd {"TH": ["fruit wholesaler"]}
   enrich_website?: boolean           // mặc định true — kiểm tra website sống/chết
   ttl_days?: number                  // mặc định 90 — bỏ qua địa điểm đã quét gần đây
 }
@@ -276,3 +277,51 @@ Quy ước: `"ALL"` = **tách ra từng mục** ở cấp đó.
 Mã cụ thể không khớp thì trả rỗng chứ **không** âm thầm lùi về cấp trên. Riêng khi
 chọn `"ALL"`, quốc gia/tỉnh thiếu dữ liệu cấp dưới sẽ được giữ lại ở cấp cao hơn —
 chọn "phủ hết" mà mất nguyên một nước mới là sai.
+
+## 6. Từ khoá bản địa theo quốc gia
+
+Từ khoá tiếng Việt gần như vô dụng ngoài Việt Nam. Đo thực tế:
+
+| Cách viết | Kết quả |
+|---|---|
+| `xuất nhập khẩu trái cây Bangkok` + `gl=vn` | **2** — và cả hai đều ở TP.HCM, sai địa bàn |
+| `fruit wholesaler Bangkok` + `gl=th` | **60+**, 52 có SĐT |
+| `ผู้ค้าส่งผลไม้ กรุงเทพ` + `gl=th` | **60+**, 42 có SĐT |
+
+Hai cơ chế xử lý:
+
+1. **`hl`/`gl` theo từng truy vấn** — backend suy ra quốc gia từ đuôi chuỗi địa điểm
+   rồi gắn ngôn ngữ/quốc gia riêng cho truy vấn đó. FE không cần làm gì.
+   `hl` cố ý chỉ nhận `vi` (Việt Nam) hoặc `en` (mọi nơi khác), vì bộ bóc tách chỉ
+   đọc được hai ngôn ngữ này — đặt `hl=th` thì mọi tín hiệu chấm sống/chết thành rỗng.
+2. **`keyword_map`** — từ khoá riêng cho mỗi quốc gia, do người dùng duyệt trước khi chạy.
+
+```ts
+type CountryKeywords = {
+  country_code: string
+  country_name: string
+  language: string
+  keywords: string[]
+  source: "ai" | "cache" | "user" | "original" | "fallback"
+}
+```
+
+| Method | Path | Body | Data |
+|---|---|---|---|
+| GET | `/keywords/status` | — | `{ ai_available: boolean }` |
+| POST | `/keywords/localize` | `{ keywords, locations?, countries? }` | `{ items: CountryKeywords[], ai_available, warning }` |
+| POST | `/keywords/save` | `{ keywords, country_code, language, translated }` | `{ saved: true }` |
+
+`/keywords/localize` suy ra danh sách quốc gia từ `locations` (đuôi mỗi dòng), hoặc
+nhận thẳng `countries`. Ý nghĩa `source`:
+
+| Giá trị | Nghĩa |
+|---|---|
+| `original` | Việt Nam — dùng thẳng từ khoá gốc, không dịch |
+| `ai` | Vừa sinh bằng AI |
+| `cache` | Lấy từ bộ nhớ đệm của lần trước |
+| `user` | Bản người dùng đã sửa tay, AI không ghi đè |
+| `fallback` | Không dịch được → tạm dùng từ khoá gốc, xem `warning` |
+
+**Endpoint này không bao giờ trả lỗi vì AI.** Chưa cấu hình khoá, sai khoá hay quá hạn
+mức đều trả về từ khoá gốc kèm `warning`; người dùng vẫn tạo job được như thường.

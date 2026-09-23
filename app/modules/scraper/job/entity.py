@@ -60,6 +60,11 @@ class JobQuery(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     job_id: Mapped[int] = mapped_column(ForeignKey("scrape_jobs.id", ondelete="CASCADE"), index=True)
     query: Mapped[str] = mapped_column(String(300))
+    # Ngôn ngữ + quốc gia ưu tiên khi tìm, tính theo ĐỊA ĐIỂM của chính truy vấn này.
+    # Để chung một giá trị cho cả job là sai ngay khi job trải nhiều nước: tìm
+    # "fruit wholesaler Bangkok" với gl=vn ra cửa hàng ở TP.HCM (đã đo thực tế).
+    hl: Mapped[str] = mapped_column(String(8), default="vi")
+    gl: Mapped[str] = mapped_column(String(8), default="vn")
     status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
     results_found: Mapped[int | None] = mapped_column(Integer)
     error: Mapped[str | None] = mapped_column(Text)

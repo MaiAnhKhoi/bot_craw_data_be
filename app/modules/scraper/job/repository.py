@@ -56,9 +56,10 @@ class JobRepository:
         self.db.flush()
         return job
 
-    def add_queries(self, job_id: int, queries: list[str]) -> int:
+    def add_queries(self, job_id: int, queries: list) -> int:
+        """`queries` là danh sách ExpandedQuery (query + hl + gl)."""
         for q in queries:
-            self.db.add(JobQuery(job_id=job_id, query=q))
+            self.db.add(JobQuery(job_id=job_id, query=q.query, hl=q.hl, gl=q.gl))
         self.db.flush()
         return len(queries)
 

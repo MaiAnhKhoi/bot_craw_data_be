@@ -20,6 +20,14 @@ class JobCreateRequest(BaseModel):
         ),
     )
     enrich_website: bool = Field(True, description="Lấy website doanh nghiệp và kiểm tra còn sống không")
+    keyword_map: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Từ khoá riêng theo mã quốc gia, ví dụ {'TH': ['fruit wholesaler']}. "
+            "Địa điểm thuộc quốc gia nào thì dùng từ khoá của quốc gia đó; "
+            "không khai thì dùng `keywords` chung."
+        ),
+    )
     ttl_days: int = Field(90, ge=0, le=3650, description="Bỏ qua địa điểm đã quét trong ngần này ngày")
 
     @field_validator("keywords", "locations", mode="before")

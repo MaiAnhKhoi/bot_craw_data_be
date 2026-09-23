@@ -47,8 +47,13 @@ _COLLECT_JS = r"""
 """
 
 
-def build_search_url(query: str, settings: Settings) -> str:
-    return f"https://www.google.com/maps/search/{quote(query)}?hl={settings.hl}&gl={settings.gl}"
+def build_search_url(query: str, settings: Settings, hl: str | None = None, gl: str | None = None) -> str:
+    """`hl`/`gl` của CHÍNH truy vấn này, không phải của cả job.
+
+    `gl` quyết định Google ưu tiên kết quả ở nước nào. Đây không phải chi tiết nhỏ:
+    tìm "fruit wholesaler Bangkok" với gl=vn trả về cửa hàng ở TP.HCM.
+    """
+    return f"https://www.google.com/maps/search/{quote(query)}?hl={hl or settings.hl}&gl={gl or settings.gl}"
 
 
 def card_from_raw(raw: dict) -> CardResult | None:
@@ -78,9 +83,16 @@ def card_from_raw(raw: dict) -> CardResult | None:
     )
 
 
-async def search_query(page, query: str, settings: Settings, max_results: int = 200) -> list[CardResult]:  # noqa: ANN001
+async def search_query(  # noqa: ANN001
+    page,
+    query: str,
+    settings: Settings,
+    max_results: int = 200,
+    hl: str | None = None,
+    gl: str | None = None,
+) -> list[CardResult]:
     """Chạy một truy vấn, cuộn tới hết danh sách, trả các thẻ đã khử trùng lặp."""
-    await goto(page, build_search_url(query, settings))
+    await goto(page, build_search_url(query, settings, hl, gl))
     feed = page.locator('div[role="feed"]').first
     try:
         await feed.wait_for(timeout=15_000)

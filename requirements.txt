@@ -72,3 +72,10 @@ playwright>=1.63,<1.64
 # (`browser_engine=patchright` trong config). Cùng đánh số phiên bản với playwright nên ghim
 # cùng trần. Lưu ý: patchright tải Chromium RIÊNG — xem ghi chú trong Dockerfile.
 patchright>=1.63,<1.64
+
+# AI sinh từ khoá tìm kiếm bản địa theo quốc gia (app/core/ai.py — CHỖ DUY NHẤT gọi AI).
+# Chỉ chạy khi người dùng bấm ở màn tạo job; worker cào KHÔNG bao giờ gọi AI, nên
+# thiếu khoá API thì mọi thứ vẫn chạy, chỉ là không có bản địa hoá từ khoá.
+# Dùng SDK chính thức chứ không tự gọi REST: SDK có sẵn retry/backoff cho 429 và 5xx,
+# lỗi phân loại theo kiểu, và structured output (trả JSON đúng schema, không phải tự parse).
+anthropic>=1.0

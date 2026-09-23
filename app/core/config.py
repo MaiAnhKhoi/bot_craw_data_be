@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://botcraw:botcraw@localhost:5432/botcraw"
     db_pool_size: int = 10
     db_max_overflow: int = 10
+    db_connect_timeout: int = 5   # giây; tối thiểu psycopg chấp nhận là 2
 
     # --- bảo mật ---
     jwt_secret_key: str = "doi-secret-nay-truoc-khi-chay-that"
@@ -57,6 +58,16 @@ class Settings(BaseSettings):
     # --- kiểm tra website (httpx, không dùng trình duyệt) ---
     website_check_timeout: float = 8.0
     website_check_concurrency: int = 8
+
+    # --- AI sinh từ khoá bản địa (tuỳ chọn, tắt mặc định) ---
+    # Chỉ dùng lúc TẠO JOB để gợi ý từ khoá theo quốc gia; worker cào không bao giờ
+    # gọi AI. Không cấu hình khoá thì giao diện ẩn nút dịch và mọi thứ chạy như cũ.
+    ai_enabled: bool = True
+    ai_api_key: str = ""
+    # Tác vụ này chỉ là tra cụm từ tìm kiếm bản địa — model nhẹ là đủ và rẻ.
+    ai_model: str = "claude-haiku-4-5"
+    ai_max_keywords: int = 4
+    ai_max_countries: int = 40      # trần số quốc gia cho một lần gọi
 
     # --- xuất file ---
     export_dir: str = "var/exports"

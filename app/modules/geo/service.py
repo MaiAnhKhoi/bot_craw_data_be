@@ -152,3 +152,64 @@ def expand(
                 if len(out) < MAX_LOCATIONS:
                     out.append(f"{w['query']}, {p['query']}, {c['query']}")
     return out, total
+
+
+# ---------------------------------------------------------------------------
+# Suy ra quốc gia + ngôn ngữ tìm kiếm từ một chuỗi địa điểm
+# ---------------------------------------------------------------------------
+
+@lru_cache(maxsize=1)
+def _country_index() -> dict[str, dict]:
+    """Bảng tra: tên quốc gia (đã bỏ dấu) -> bản ghi quốc gia."""
+    index: dict[str, dict] = {}
+    for c in load().countries:
+        for name in (c["name"], c.get("name_en"), c.get("query")):
+            if name:
+                index.setdefault(fold_text(name), c)
+    return index
+
+
+def resolve_country(location: str | None) -> dict | None:
+    """Đoán quốc gia từ chuỗi địa điểm, dựa vào ĐOẠN CUỐI.
+
+    Chuỗi do bộ chọn sinh ra luôn kết thúc bằng tên quốc gia
+    ("Phường Bến Thành, Thành phố Hồ Chí Minh, Việt Nam"), nên đọc từ đuôi vào là
+    đủ. Người dùng tự gõ "Quận 1" thì không khớp -> trả None, và nơi gọi sẽ dùng
+    mặc định của job.
+    """
+    if not location:
+        return None
+    index = _country_index()
+    parts = [p.strip() for p in location.split(",") if p.strip()]
+    # Thử đoạn cuối trước, rồi mới thử cả chuỗi (trường hợp chỉ ghi mỗi tên nước).
+    for candidate in ([parts[-1]] if parts else []) + [location]:
+        found = index.get(fold_text(candidate))
+        if found:
+            return found
+    return None
+
+
+def locale_for(country_code: str | None) -> tuple[str, str]:
+    """Trả (hl, gl) dùng khi tìm kiếm ở quốc gia này.
+
+    `gl` là mã quốc gia thật -> Google ưu tiên kết quả ở đó. Thiếu nó thì tìm
+    "fruit wholesaler Bangkok" với gl=vn vẫn ra cửa hàng ở TP.HCM (đã đo).
+
+    `hl` CỐ TÌNH chỉ nhận hai giá trị: `vi` cho Việt Nam, `en` cho mọi nơi khác.
+    Không phải vì lười — toàn bộ bộ bóc tách (trạng thái mở cửa, "Đã đóng cửa
+    vĩnh viễn", tuổi đánh giá, nhãn địa chỉ/điện thoại) chỉ đọc được tiếng Việt
+    và tiếng Anh. Đặt hl=th thì thẻ kết quả ra tiếng Thái và mọi tín hiệu chấm
+    sống/chết trở thành rỗng mà không có lỗi nào báo.
+    """
+    code = (country_code or "").upper()
+    if code == "VN":
+        return "vi", "vn"
+    if not code:
+        return "vi", "vn"
+    return "en", code.lower()
+
+
+def locale_for_location(location: str | None, default: tuple[str, str] = ("vi", "vn")) -> tuple[str, str]:
+    """(hl, gl) cho một chuỗi địa điểm cụ thể; không nhận ra thì dùng mặc định của job."""
+    country = resolve_country(location)
+    return locale_for(country["code"]) if country else default

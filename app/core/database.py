@@ -25,6 +25,10 @@ engine = create_engine(
     pool_pre_ping=True,          # tránh dùng connection đã chết sau khi Postgres restart
     pool_size=_settings.db_pool_size,
     max_overflow=_settings.db_max_overflow,
+    # Postgres chưa lên thì báo lỗi sau vài giây thay vì treo tới timeout mặc định
+    # của hệ điều hành (hàng chục giây đến vài phút). Quan trọng cả lúc khởi động
+    # container lẫn lúc chạy test trên máy chưa dựng hạ tầng.
+    connect_args={"connect_timeout": _settings.db_connect_timeout},
     future=True,
 )
 
