@@ -374,3 +374,39 @@ def test_needs_detail_ton_trong_ttl(sample_job):
 def test_env_khong_lo_secret_qua_health(client):
     body = client.get("/api/v1/health").text
     assert os.environ.get("BCD_JWT_SECRET_KEY", "khong-ton-tai") not in body
+
+
+# ---------- lưới chắn: mọi endpoint GHI-KHÔNG-ĐỔI phải sống ----------
+def test_moi_endpoint_doc_deu_khong_tra_500(client, auth):
+    """Gọi thử MỌI route GET không tham số đường dẫn, không cái nào được 500.
+
+    Viết ra sau khi `/places/queries` chết bằng 500 suốt một lượt build mà không
+    test nào hé răng: `PlaceRepository.query_counts` bị xoá nhầm trong lúc sửa
+    một hàm nằm ngay cạnh nó. Không có lưới này thì lỗi kiểu "service gọi một
+    phương thức repository không còn tồn tại" chỉ lộ ra khi người dùng bấm vào.
+
+    Lấy danh sách đường dẫn từ LƯỢC ĐỒ OPENAPI chứ không duyệt `app.routes`:
+    cấu trúc router nội bộ của FastAPI đổi theo phiên bản (bản hiện tại gói mọi
+    thứ trong `_IncludedRouter` không có `.routes`), còn OpenAPI là giao kèo công
+    khai. Thêm endpoint mới là tự động được phủ, không phải khai tay.
+    """
+    from app.main import app as ung_dung
+
+    bo_qua = {
+        "/api/v1/places/export",   # trả file, cần tham số riêng
+        # SSE: luồng vô hạn, gọi vào là test treo vĩnh viễn (đã dính).
+        # `/jobs/{job_id}/events` tự loại vì có tham số đường dẫn.
+        "/api/v1/places/events",
+    }
+    loi: list[str] = []
+    da_thu = 0
+    for duong_dan, cac_method in ung_dung.openapi()["paths"].items():
+        if "get" not in cac_method or "{" in duong_dan or duong_dan in bo_qua:
+            continue
+        da_thu += 1
+        r = client.get(duong_dan, headers=auth)
+        if r.status_code >= 500:
+            loi.append(f"{duong_dan} -> {r.status_code}: {r.text[:200]}")
+
+    assert da_thu > 5, f"chỉ thử được {da_thu} route, lược đồ OpenAPI có vấn đề"
+    assert not loi, "Endpoint trả lỗi hệ thống:\n" + "\n".join(loi)

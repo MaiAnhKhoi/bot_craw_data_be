@@ -180,6 +180,10 @@ class PlaceRepository:
         ).one()
         return row[0], row[1]
 
+    def query_counts(self) -> list[tuple[str, int]]:
+        """(chuỗi truy vấn, số địa điểm) cho MỌI lượt tìm đã có dữ liệu."""
+        return [(kw, int(n)) for kw, n in self.db.execute(QUERY_COUNTS).all()]
+
     def country_counts(self) -> list[tuple[str, int]]:
         """(mã quốc gia, số địa điểm) cho những nước THẬT SỰ có dữ liệu."""
         return [(code, int(n)) for code, n in self.db.execute(COUNTRY_COUNTS).all()]
