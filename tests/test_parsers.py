@@ -147,15 +147,17 @@ class TestParseRating:
         (số lượt đánh giá, giá...) nên trả None thay vì bịa ra rating."""
         assert parse_rating(text) is None
 
-    def test_bay_ngam_dau_cham_nghin_bi_doc_thanh_dau_thap_phan(self):
-        """BẪY ĐÃ BIẾT (không phải lỗi của hàm): '1.234 bài đánh giá' ra 1.234 vì
-        dấu chấm phân cách nghìn kiểu Việt bị hiểu là dấu thập phân, và 1.234 thì
-        lọt thang 0-5 nên không bị loại.
+    def test_dau_cham_nghin_khong_bi_doc_thanh_diem_danh_gia(self):
+        """'1.234 bài đánh giá' là SỐ LƯỢT, không phải 1,234 sao.
 
-        Hàm này chỉ ĐƯỢC PHÉP nhận nhãn sao; detail.py lọc sẵn bằng /(star|sao)/i
-        và parse_card chỉ đưa vào dòng khớp _RATING_ONLY_RE. Ghi lại ca này để
-        nếu ai nới bộ lọc đó ra thì có test nhắc ngay."""
-        assert parse_rating("1.234 bài đánh giá") == 1.234
+        Phần thập phân đúng 3 chữ số là cách viết hàng nghìn kiểu Việt/Anh; nếu
+        không chặn thì nó lọt thang 0-5 và biến số lượt đánh giá thành điểm sao.
+        """
+        assert parse_rating("1.234 bài đánh giá") is None
+        assert parse_rating("1,234 reviews") is None
+        # Nhưng điểm sao thật vẫn phải đọc đúng
+        assert parse_rating("4,5 sao") == 4.5
+        assert parse_rating("4.5 stars") == 4.5
 
     @pytest.mark.parametrize("text", [None, "", "sao", "chưa có đánh giá"])
     def test_khong_co_so_tra_none(self, text):
@@ -322,6 +324,7 @@ class TestIsPhoneSegment:
             "0901234567",
             "090 123 4567",
             "84 938 655 504",    # thiếu dấu + nhưng vẫn là số quốc tế
+            "(028) 2227 8879",   # dạng có dấu ngoặc vùng
         ],
     )
     def test_nhan_dung_so_dien_thoai(self, segment):

@@ -36,15 +36,18 @@ class JobRepository:
         )
         return list(rows), total
 
-    def pending_queries(self, job_id: int) -> list[JobQuery]:
-        return list(
+    def next_pending_query(self, job_id: int) -> JobQuery | None:
+        """Lấy MỘT truy vấn còn chờ. `running` cũng được nhận lại: worker có thể đã
+        chết giữa chừng, để nguyên thì truy vấn đó treo vĩnh viễn."""
+        return (
             self.db.execute(
                 select(JobQuery)
                 .where(JobQuery.job_id == job_id, JobQuery.status.in_(("pending", "running")))
                 .order_by(JobQuery.id)
+                .limit(1)
             )
             .scalars()
-            .all()
+            .first()
         )
 
     # ----- ghi -----

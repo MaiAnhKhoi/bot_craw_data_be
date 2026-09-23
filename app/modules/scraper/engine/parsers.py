@@ -19,7 +19,7 @@ _FEATURE_ID_RE = re.compile(r"!1s(0x[0-9a-fA-F]+:0x[0-9a-fA-F]+)")
 _LATLNG_DATA_RE = re.compile(r"!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)")
 _LATLNG_AT_RE = re.compile(r"/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)")
 _PLACE_NAME_RE = re.compile(r"/maps/place/([^/?#]+)")
-_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?")
+_NUMBER_RE = re.compile(r"(\d+)(?:([.,])(\d+))?")
 _REVIEW_COUNT_RE = re.compile(
     r"(\d[\d.,\s]*)\s*([KNM])?\s*(?:reviews?|bài đánh giá|đánh giá|lượt đánh giá)",
     re.IGNORECASE,
@@ -49,7 +49,7 @@ _OPEN_STATE_RE = re.compile(
 )
 # Một đoạn chỉ được coi là số điện thoại khi TOÀN BỘ đoạn trông giống số —
 # nhờ vậy số nhà trong địa chỉ không bị nhận nhầm.
-_PHONE_SEGMENT_RE = re.compile(r"^(?:\+?84|0)[\d\s.()-]{7,16}$")
+_PHONE_SEGMENT_RE = re.compile(r"^[(]?(?:\+?84|0)[\d\s.()-]{7,16}$")
 _RATING_ONLY_RE = re.compile(r"^\d+[.,]\d+\s*(\([\d.,\sKNM]+\))?$")
 _SPONSORED_RE = re.compile(r"(Được tài trợ|Sponsored|Quảng cáo)", re.IGNORECASE)
 
@@ -64,10 +64,15 @@ _REL_UNIT_DAYS = {
     "tháng": 30, "thang": 30, "month": 30, "months": 30,
     "năm": 365, "nam": 365, "year": 365, "years": 365,
 }
+# Hai lối diễn đạt đều gặp: "2 tuần trước" và "cách đây 2 tuần".
+# Đuôi "trước"/"ago" chỉ bắt buộc khi KHÔNG có tiền tố "cách đây".
 _REL_DATE_RE = re.compile(
-    r"(?:cách đây\s+)?([0-9]+|[a-zàáâãèéêìíòóôõùúăđĩũơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]+)"
-    r"\s*(ngày|ngay|tuần|tuan|tháng|thang|năm|nam|day|days|week|weeks|month|months|year|years)"
-    r"\s*(?:trước|ago)",
+    r"(?:(?P<prefix>cách đây)\s+)?"
+    r"(?P<num>[0-9]+|[a-zàáâãèéêìíòóôõùúăđĩũơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]+)"
+        # Nhánh DÀI đứng trước nhánh ngắn: "days" phải được thử trước "day", nếu không
+    # regex dừng ở "day" rồi phần đuôi " ago" không còn khớp được nữa.
+    r"\s*(?P<unit>ngày|ngay|tuần|tuan|tháng|thang|năm|nam|days|day|weeks|week|months|month|years|year)"
+    r"(?:\s*(?P<suffix>trước|ago))?",
     re.IGNORECASE,
 )
 
@@ -129,8 +134,13 @@ def parse_rating(text: str | None) -> float | None:
     m = _NUMBER_RE.search(text)
     if not m:
         return None
+    whole, sep, frac = m.group(1), m.group(2), m.group(3)
+    if sep and frac and len(frac) == 3:
+        # "1.234" / "1,234" là cách viết hàng nghìn (số lượt đánh giá), không phải
+        # điểm 1,234 sao. Không chặn thì nó lọt thẳng vào thang 0-5.
+        return None
     try:
-        value = float(m.group(0).replace(",", "."))
+        value = float(f"{whole}.{frac}") if sep and frac else float(whole)
     except ValueError:
         return None
     return value if 0 <= value <= 5 else None
@@ -194,7 +204,10 @@ def parse_relative_days(text: str | None) -> int | None:
     m = _REL_DATE_RE.search(text.lower())
     if not m:
         return None
-    raw_num, unit = m.group(1), m.group(2)
+    if not m.group("prefix") and not m.group("suffix"):
+        # "giờ mở cửa 2 tuần" không phải mốc thời gian — cần ít nhất một dấu hiệu.
+        return None
+    raw_num, unit = m.group("num"), m.group("unit")
     if raw_num.isdigit():
         n = int(raw_num)
     else:

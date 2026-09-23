@@ -18,7 +18,6 @@ PytestUnknownMarkWarning.
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 from pathlib import Path
 
@@ -36,22 +35,6 @@ MARKERS = (
     "browser: cần Playwright Chromium (vẫn offline, chạy trên HTML mẫu)",
     "live: bắn vào Google Maps thật; chỉ chạy khi GMAPS_LIVE=1",
 )
-
-# Di sản của kiến trúc cũ: 4 file test dưới đây import package `gmaps_scraper`
-# (src/gmaps_scraper) đã bị thay bằng `app/`. Chúng làm HỎNG CẢ PHIÊN THU THẬP
-# của pytest chứ không chỉ tự đỏ. Bỏ qua khi package cũ không còn tồn tại; nếu
-# ai đó khôi phục lại package cũ thì chúng tự động được chạy trở lại.
-_LEGACY_MODULES = (
-    "test_export_pipeline.py",
-    "test_live.py",
-    "test_pipeline.py",
-    "test_storage.py",
-)
-
-collect_ignore: list[str] = []
-if importlib.util.find_spec("gmaps_scraper") is None:
-    collect_ignore = [name for name in _LEGACY_MODULES if (Path(__file__).parent / name).exists()]
-
 
 def pytest_configure(config: pytest.Config) -> None:
     for marker in MARKERS:

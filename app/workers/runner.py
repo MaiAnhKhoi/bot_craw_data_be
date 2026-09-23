@@ -40,7 +40,7 @@ from app.modules.scraper.job.entity import (
     JOB_QUEUED,
 )
 from app.modules.scraper.job.repository import JobRepository
-from app.modules.scraper.place.entity import PLACE_PENDING, Place
+from app.modules.scraper.place.entity import Place
 from app.modules.scraper.place.writer import PlaceWriter, needs_detail
 from app.modules.scraper.status.repository import WorkerStatusRepository
 
@@ -149,10 +149,9 @@ class Runner:
             self._assert_job_runnable(job_id)
             db = SessionLocal()
             try:
-                pending = JobRepository(db).pending_queries(job_id)
-                if not pending:
+                jq = JobRepository(db).next_pending_query(job_id)
+                if jq is None:
                     return
-                jq = pending[0]
                 jq.status = "running"
                 jq.started_at = datetime.now(UTC)
                 query_text = jq.query
@@ -184,6 +183,10 @@ class Runner:
                 for card in cards:
                     _, is_new = writer.upsert_from_card(card, job_id, query_text)
                     new_count += int(is_new)
+                # Đếm theo số liên kết job-địa điểm THẬT, không cộng dồn len(cards):
+                # nhiều truy vấn giao nhau sẽ trả về cùng một địa điểm, cộng dồn sẽ
+                # thổi phồng mẫu số và thanh tiến độ không bao giờ tới 100%.
+                total_places = writer.count_places_of_job(job_id)
             finally:
                 db.close()
 
@@ -191,7 +194,7 @@ class Runner:
             self._bump_job(
                 job_id,
                 inc_done_queries=1,
-                inc_total_places=len(cards),
+                total_places=total_places,
                 inc_new_places=new_count,
             )
             self.pacer.on_success()
@@ -232,10 +235,9 @@ class Runner:
             db = SessionLocal()
             try:
                 writer = PlaceWriter(db, region)
-                pending = writer.places_of_job(job_id, (PLACE_PENDING,))
-                if not pending:
+                place = writer.next_pending_of_job(job_id)
+                if place is None:
                     return
-                place = pending[0]
                 place_id, url, name = place.id, place.maps_url, place.name
 
                 if not needs_detail(place, detail_mode, enrich, ttl_days) or not url:

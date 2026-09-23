@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.modules.scraper.engine.models import CardResult, DetailResult
@@ -192,10 +192,8 @@ class PlaceWriter:
         place.status = PLACE_DONE
         place.scraped_at = place.scraped_at or _now()
         place.last_verified_at = _now()
-        if place.website:
-            pass
-        elif place.detail_scraped:
-            place.website_status = place.website_status or "NONE"
+        if not place.website:
+            place.website_status = "NONE"
         recompute_liveness(place)
         self.db.commit()
         return place
@@ -213,6 +211,31 @@ class PlaceWriter:
         self.db.commit()
 
     # ----- truy vấn phục vụ worker -----
+    def next_pending_of_job(self, job_id: int) -> Place | None:
+        """Lấy MỘT địa điểm còn chờ xử lý.
+
+        Vòng lặp pha chi tiết gọi hàm này mỗi lượt. Nạp cả danh sách (có thể hàng
+        chục nghìn dòng) rồi chỉ dùng phần tử đầu sẽ biến vòng lặp thành O(n^2).
+        """
+        return (
+            self.db.execute(
+                select(Place)
+                .join(JobPlace, JobPlace.place_id == Place.id)
+                .where(JobPlace.job_id == job_id, Place.status == PLACE_PENDING)
+                .order_by(Place.id)
+                .limit(1)
+            )
+            .scalars()
+            .first()
+        )
+
+    def count_places_of_job(self, job_id: int) -> int:
+        return int(
+            self.db.execute(
+                select(func.count(JobPlace.place_id)).where(JobPlace.job_id == job_id)
+            ).scalar_one()
+        )
+
     def places_of_job(self, job_id: int, statuses: tuple[str, ...] = (PLACE_PENDING,)) -> list[Place]:
         return list(
             self.db.execute(

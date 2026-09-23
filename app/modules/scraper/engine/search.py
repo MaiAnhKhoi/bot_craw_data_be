@@ -51,7 +51,7 @@ def build_search_url(query: str, settings: Settings) -> str:
     return f"https://www.google.com/maps/search/{quote(query)}?hl={settings.hl}&gl={settings.gl}"
 
 
-def card_from_raw(raw: dict, fallback_query: str = "") -> CardResult | None:
+def card_from_raw(raw: dict) -> CardResult | None:
     """Ghép dữ liệu DOM thô của một thẻ thành CardResult."""
     href = raw.get("href") or ""
     info = parse_place_url(href)
@@ -87,7 +87,7 @@ async def search_query(page, query: str, settings: Settings, max_results: int = 
     except Exception:  # noqa: BLE001 — Playwright ném TimeoutError riêng của nó
         # Google nhảy thẳng vào trang chi tiết khi truy vấn khớp đúng một doanh nghiệp.
         if "/maps/place/" in page.url:
-            card = card_from_raw({"href": page.url, "lines": [], "ratingLabels": []}, query)
+            card = card_from_raw({"href": page.url, "lines": [], "ratingLabels": []})
             if card:
                 try:
                     heading = page.locator('div[role="main"] h1').first
@@ -109,7 +109,7 @@ async def search_query(page, query: str, settings: Settings, max_results: int = 
     while len(seen) < max_results and idle_rounds < 5:
         before = len(seen)
         for raw in await feed.evaluate(_COLLECT_JS):
-            card = card_from_raw(raw, query)
+            card = card_from_raw(raw)
             if card is None:
                 continue
             seen.setdefault(card.feature_id or card.maps_url, card)

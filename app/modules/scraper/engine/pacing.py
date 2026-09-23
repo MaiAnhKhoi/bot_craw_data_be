@@ -25,13 +25,24 @@ class Pacer:
     multiplier: float = 1.0
     consecutive_ok: int = 0
 
+    def _bounds(self) -> tuple[float, float]:
+        return (
+            min(self.base_min * self.multiplier, self.ceiling),
+            min(self.base_max * self.multiplier, self.ceiling),
+        )
+
     @property
     def current_seconds(self) -> float:
-        return round((self.base_min + self.base_max) / 2 * self.multiplier, 1)
+        """Nhịp thật đang áp dụng — PHẢI kẹp theo `ceiling` giống hệt `wait()`.
+
+        Con số này đi thẳng lên log và API trạng thái worker; nếu không kẹp thì
+        giao diện báo một đằng mà worker ngủ một nẻo.
+        """
+        lo, hi = self._bounds()
+        return round((lo + hi) / 2, 1)
 
     async def wait(self) -> None:
-        lo = min(self.base_min * self.multiplier, self.ceiling)
-        hi = min(self.base_max * self.multiplier, self.ceiling)
+        lo, hi = self._bounds()
         await asyncio.sleep(random.uniform(lo, hi))
 
     def on_success(self) -> None:
