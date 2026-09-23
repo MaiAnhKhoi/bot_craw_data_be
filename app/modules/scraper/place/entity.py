@@ -19,6 +19,17 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
 
+# --- trạng thái CHĂM SÓC của người bán hàng ---
+#
+# Tách hẳn khỏi `status` (trạng thái QUÉT của worker) và khỏi `liveness_label`
+# (doanh nghiệp còn sống không). Ba thứ hoàn toàn khác nhau: một lead có thể
+# `done` + `ACTIVE` + `rejected` cùng lúc.
+CONTACT_NEW = "new"            # chưa ai đụng tới
+CONTACT_CALLED = "called"      # đã gọi, chưa kết luận
+CONTACT_INTERESTED = "interested"
+CONTACT_REJECTED = "rejected"  # không phù hợp, đừng gọi lại
+CONTACT_STATUSES = (CONTACT_NEW, CONTACT_CALLED, CONTACT_INTERESTED, CONTACT_REJECTED)
+
 PLACE_PENDING = "pending"
 PLACE_DONE = "done"
 PLACE_FAILED = "failed"
@@ -41,6 +52,16 @@ class Place(Base):
         Index("ix_places_status", "status"),
         Index("ix_places_phone_e164", "phone_e164"),
         Index("ix_places_scraped_at", "scraped_at"),
+        # Cột sắp xếp của bảng Địa điểm. Không có chỉ mục thì mỗi lần mở
+        # trang là một lần sắp xếp toàn bảng: đo ở 300k dòng là 84ms cho
+        # TRANG ĐẦU TIÊN, có chỉ mục còn 0,43ms.
+        Index("ix_places_liveness_score", "liveness_score", "id"),
+        Index("ix_places_rating", "rating", "id"),
+        Index("ix_places_review_count", "review_count", "id"),
+        # Ba cột `max()` của `pulse()` — nhịp đập luồng SSE chạy mỗi giây.
+        Index("ix_places_last_seen_at", "last_seen_at"),
+        Index("ix_places_last_verified_at", "last_verified_at"),
+        Index("ix_places_website_checked_at", "website_checked_at"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -52,7 +73,20 @@ class Place(Base):
 
     # --- 4 trường nghiệp vụ ---
     name: Mapped[str] = mapped_column(String(300))
-    address: Mapped[str | None] = mapped_column(Text)            # vị trí
+    # ĐỊA CHỈ ĐẦY ĐỦ, và CHỈ địa chỉ đầy đủ — thứ lấy từ trang chi tiết của
+    # Google, luôn có đủ đường/phường/tỉnh/quốc gia.
+    #
+    # Trước đây cột này còn nhận cả mẩu địa chỉ rút gọn trên thẻ kết quả, và một
+    # cột mang hai nghĩa thì không cách nào hiển thị đúng. Đo trên dữ liệu thật:
+    #   đã mở trang chi tiết :  22 dòng, 0% rỗng, dài trung bình 58 ký tự
+    #   chỉ có thẻ kết quả   : 2.526 dòng, 39% RỖNG, dài trung bình 20 ký tự
+    #                          ("Phan Huy Ích", "183/72/6 Nguyễn Văn Khối")
+    # Giờ `address` hoặc là đầy đủ, hoặc là NULL. Không có trạng thái thứ ba.
+    address: Mapped[str | None] = mapped_column(Text)
+    # Mẩu địa chỉ trên thẻ kết quả — giữ lại vì với chế độ "không mở trang chi
+    # tiết" thì đó là tất cả những gì có, và một mẩu vẫn hơn không có gì. Nhưng
+    # nó nằm ở cột RIÊNG để không ai nhầm nó với địa chỉ thật.
+    address_short: Mapped[str | None] = mapped_column(Text)
     # Mã quốc gia ISO alpha-2. Hai việc phụ thuộc vào nó:
     #  1. Hiện cột "Quốc gia" — địa chỉ bị cắt trong bảng nên nhìn không ra nước nào.
     #  2. Vùng để phân tích số điện thoại. Đây mới là chỗ quan trọng: cùng một
@@ -93,6 +127,14 @@ class Place(Base):
     # Tên + địa chỉ đã bỏ dấu, viết thường — để tìm "quan 1" ra "Quận 1".
     # Có chỉ mục GIN trigram nên ILIKE '%...%' vẫn nhanh trên vài trăm nghìn dòng.
     search_text: Mapped[str | None] = mapped_column(Text)
+
+    # --- chăm sóc khách hàng ---
+    # Không có mấy cột này thì công cụ dừng ở chỗ xuất file: sale gọi xong không
+    # có chỗ ghi lại, nên lần quét sau không ai biết ai đã được gọi rồi. Với
+    # 15-30k lead thì đó là thứ quyết định công cụ dùng được thật hay không.
+    contact_status: Mapped[str] = mapped_column(String(12), default=CONTACT_NEW, index=True)
+    contact_note: Mapped[str | None] = mapped_column(Text)
+    contact_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # --- vận hành ---
     status: Mapped[str] = mapped_column(String(12), default=PLACE_PENDING)

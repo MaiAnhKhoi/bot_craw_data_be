@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import AppError, NotFoundError
 from app.core.pagination import Page, PageParams
 from app.core.text import fold_text
 from app.modules.scraper.engine.liveness import LivenessInput, evaluate
-from app.modules.scraper.place.entity import PLACE_PENDING, Place
+from app.modules.scraper.place.entity import CONTACT_STATUSES, PLACE_PENDING, Place
 from app.modules.scraper.place.repository import PlaceFilter, PlaceRepository
 from app.modules.scraper.place.response import (
     CountryCountResponse,
@@ -77,6 +77,37 @@ class PlaceService:
         place = self.repo.by_id(place_id)
         if place is None:
             raise NotFoundError(f"Không tìm thấy địa điểm {place_id}")
+        kw = self.repo.keywords_for([place.id])
+        return PlaceResponse.of(place, kw.get(place.id, []))
+
+    def set_contact(
+        self, place_id: int, status: str, note: str | None
+    ) -> PlaceResponse:
+        """Ghi lại việc bên mình đã liên hệ tới đâu.
+
+        `contact_at` chỉ đặt khi trạng thái ĐỔI, không phải mỗi lần sửa ghi chú:
+        nó có nghĩa "lần cuối trạng thái thay đổi", sửa lỗi chính tả trong ghi
+        chú mà làm mốc nhảy lên thì con số đó hết dùng được để lọc.
+        """
+        from datetime import UTC, datetime
+
+        if status not in CONTACT_STATUSES:
+            raise AppError(
+                f"Trạng thái chăm sóc không hợp lệ: {status!r}",
+                code="VALIDATION_ERROR",
+                status_code=422,
+            )
+        place = self.repo.by_id(place_id)
+        if place is None:
+            raise NotFoundError(f"Không tìm thấy địa điểm {place_id}")
+        if place.contact_status != status:
+            place.contact_status = status
+            place.contact_at = datetime.now(UTC)
+        # Chuỗi rỗng = xoá ghi chú; None = giữ nguyên ghi chú đang có.
+        if note is not None:
+            place.contact_note = note.strip() or None
+        self.db.commit()
+        self.db.refresh(place)
         kw = self.repo.keywords_for([place.id])
         return PlaceResponse.of(place, kw.get(place.id, []))
 

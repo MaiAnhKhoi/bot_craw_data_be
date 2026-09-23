@@ -142,20 +142,17 @@ def needs_detail(place: Place, detail_mode: str, enrich_website: bool, ttl_days:
     if detail_mode == "always":
         return True
 
-    # missing_only
+    # missing_only — thiếu SĐT hoặc thiếu ĐỊA CHỈ ĐẦY ĐỦ thì phải mở trang chi tiết.
+    #
+    # `place.address` giờ chỉ nhận địa chỉ từ trang chi tiết, nên điều kiện này
+    # cũng chính là "chưa có địa chỉ dùng được". Thẻ kết quả rút gọn tới mức vô
+    # dụng — đo thật: 39% số dòng KHÔNG có mẩu nào, phần còn lại dài trung bình
+    # 20 ký tự ("Phan Huy Ích"). Địa chỉ là một trong bốn trường nghiệp vụ bắt
+    # buộc, nên mẩu đó không thể tính là đã có.
+    #
+    # Toạ độ đã cứu được phần QUỐC GIA (nhờ đó số điện thoại đọc đúng vùng),
+    # nhưng không cứu được phần địa chỉ. Hai việc khác nhau.
     if not place.phone_e164 or not place.address:
-        return True
-    # Địa chỉ CHƯA ĐẦY ĐỦ (không đọc ra tên nước ở đuôi) thì mở trang chi tiết.
-    #
-    # Thẻ kết quả chỉ cho địa chỉ rút gọn, và rút gọn tới mức vô dụng: đo thật
-    # trên dữ liệu Chiang Mai ra "1366", ", 201", "109 3 Wang Sing Kam Rd" —
-    # không đủ để tìm ra nơi đó, cũng không đủ để biết nó ở nước nào. Trang chi
-    # tiết luôn cho chuỗi đầy đủ có tên nước.
-    #
-    # Toạ độ đã cứu được phần QUỐC GIA (nên số điện thoại đọc đúng vùng), nhưng
-    # không cứu được phần ĐỊA CHỈ — mà địa chỉ là một trong bốn trường nghiệp vụ
-    # bắt buộc. Hai việc khác nhau, không thay thế cho nhau được.
-    if not country_of_address(place.address):
         return True
     if not place.detail_scraped:
         # Website chỉ có trên trang chi tiết, thẻ kết quả không bao giờ có —
@@ -201,14 +198,17 @@ class PlaceWriter:
         place.lat = place.lat if place.lat is not None else card.lat
         place.lng = place.lng if place.lng is not None else card.lng
         place.category = place.category or card.category
-        # Địa chỉ từ thẻ là bản RÚT GỌN; chỉ dùng khi chưa có địa chỉ đầy đủ.
-        if not place.address and card.address_short:
-            place.address = card.address_short
+        # Thẻ kết quả chỉ cho MẨU địa chỉ, và mẩu đó đi vào cột riêng.
+        # KHÔNG bao giờ ghi vào `address`: cột đó chỉ dành cho địa chỉ đầy đủ từ
+        # trang chi tiết. Trộn hai thứ vào một cột chính là gốc của chuyện "ô địa
+        # chỉ lúc rỗng lúc hiện không đầy đủ".
+        if card.address_short and not place.address_short:
+            place.address_short = card.address_short
         # Quốc gia phải chốt TRƯỚC khi đọc số điện thoại ở dưới, và phải chốt SAU
         # khi đã gán lat/lng ở trên — toạ độ là nguồn mạnh thứ hai.
         nuoc_cu = place.country_code
         place.country_code, place.country_source = resolve_place_country(
-            place.address,
+            place.address or place.address_short,
             place.country_code,
             place.country_source,
             country_code,
@@ -242,7 +242,11 @@ class PlaceWriter:
             place.phone_e164, place.phone_national, place.phone_valid = e164, national, valid
 
         place.last_seen_at = _now()
-        place.search_text = build_search_text(place.name, place.address, place.category)
+        # Tìm kiếm phải khớp cả hai: người dùng gõ tên đường thì mẩu từ thẻ
+        # cũng phải ra, không chỉ địa chỉ đầy đủ.
+        place.search_text = build_search_text(
+            place.name, place.address or place.address_short, place.category
+        )
         recompute_liveness(place)
         self.db.flush()
 
@@ -274,7 +278,8 @@ class PlaceWriter:
         if detail.name:
             place.name = detail.name
         if detail.address:
-            place.address = detail.address          # địa chỉ đầy đủ đè bản rút gọn
+            # Đây là nguồn DUY NHẤT được phép ghi vào `address`.
+            place.address = detail.address
         if detail.website:
             place.website = detail.website
             place.website_status = "UNCHECKED"
@@ -300,7 +305,9 @@ class PlaceWriter:
         # trang chi tiết — đây là lúc dữ liệu đầy đủ nhất, nên kết luận ở đây
         # thường nâng cấp được bản suy từ `gl` lúc đọc thẻ.
         place.country_code, place.country_source = resolve_place_country(
-            place.address,
+            # `or address_short`: trang chi tiết không phải lúc nào cũng cho địa
+            # chỉ. Bỏ qua mẩu từ thẻ ở đây là tự vứt một manh mối còn dùng được.
+            place.address or place.address_short,
             place.country_code,
             place.country_source,
             self.region,
@@ -327,7 +334,9 @@ class PlaceWriter:
         place.last_error = None
         place.scraped_at = _now()
         place.last_verified_at = _now()
-        place.search_text = build_search_text(place.name, place.address, place.category)
+        place.search_text = build_search_text(
+            place.name, place.address or place.address_short, place.category
+        )
         recompute_liveness(place)
         self.db.commit()
         return place

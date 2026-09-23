@@ -87,6 +87,53 @@ class RemainingAreaResponse(BaseModel):
         )
 
 
+class SplitPlanItemResponse(BaseModel):
+    """Một dòng trong bản xem trước của nút "chia nhỏ".
+
+    Dòng nào KHÔNG sinh ra truy vấn nào thì `so_truy_van = 0` và `ly_do` nói rõ
+    vì sao. Im lặng bỏ qua là tệ nhất: người dùng bấm tạo, thấy job chạy, rồi ba
+    tiếng sau mới biết tỉnh mình cần lại không hề có trong đó.
+    """
+
+    query: str
+    stop_reason: str | None
+    # subdivide = bung xuống cấp dưới · raise_cap = chạy lại với trần cao hơn
+    # retry = chạy lại y nguyên · skip = không còn việc phải làm
+    hanh_dong: str
+    tu_khoa: str | None
+    dia_diem: str | None
+    cap: str | None              # country | province | ward | null
+    so_truy_van: int
+    ly_do: str | None
+
+    @classmethod
+    def of(cls, muc) -> SplitPlanItemResponse:  # noqa: ANN001 — MucKeHoach
+        return cls(
+            query=muc.query,
+            stop_reason=muc.stop_reason,
+            hanh_dong=muc.hanh_dong,
+            tu_khoa=muc.tu_khoa,
+            dia_diem=muc.dia_diem,
+            cap=muc.cap,
+            so_truy_van=muc.so_truy_van,
+            ly_do=muc.ly_do,
+        )
+
+
+class SplitPlanResponse(BaseModel):
+    """Xem trước TRƯỚC KHI tạo: job này sẽ dài bao nhiêu.
+
+    Một tỉnh Việt Nam bung xuống phường/xã ra tới 168 truy vấn, mỗi truy vấn
+    khoảng 40 giây — chọn nhầm vài tỉnh là đặt lệnh chạy qua đêm. Con số phải
+    hiện ra trước khi bấm, không phải sau.
+    """
+
+    items: list[SplitPlanItemResponse]
+    total_queries: int
+    skipped: int
+    estimated_minutes: int
+
+
 class JobDetailResponse(JobResponse):
     queries: list[JobQueryResponse] = []
 

@@ -9,6 +9,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 from starlette.concurrency import run_in_threadpool
@@ -38,6 +39,9 @@ def place_filter(
     job_id: int | None = Query(None),
     keyword: str | None = Query(None),
     country: str | None = Query(None, description="Mã ISO alpha-2, ví dụ TH; không phân biệt hoa thường"),
+    contact_status: str | None = Query(
+        None, description="Trạng thái chăm sóc: new | called | interested | rejected"
+    ),
     liveness: list[str] = Query(default=[], description="ACTIVE | SUSPECT | DEAD"),
     business_status: str | None = Query(None),
     has_phone: bool | None = Query(None),
@@ -46,7 +50,8 @@ def place_filter(
     sort: str = Query("-liveness"),
 ) -> PlaceFilter:
     return PlaceFilter(
-        q=q, job_id=job_id, keyword=keyword, country=country, liveness=liveness,
+        q=q, job_id=job_id, keyword=keyword, country=country,
+        contact_status=contact_status, liveness=liveness,
         business_status=business_status, has_phone=has_phone, has_website=has_website,
         min_rating=min_rating, sort=sort,
     )
@@ -65,6 +70,28 @@ def list_places(
 # ⚠️ Mọi đường dẫn CỐ ĐỊNH ("/countries", "/export") phải khai báo TRƯỚC
 # "/{place_id}": FastAPI khớp route theo thứ tự khai báo, đặt sau thì "countries"
 # rơi vào chỗ của place_id và endpoint trả 422 thay vì dữ liệu.
+class ContactRequest(BaseModel):
+    """Cập nhật việc chăm sóc một lead."""
+
+    status: str = Field(description="new | called | interested | rejected")
+    # None = giữ nguyên ghi chú đang có; chuỗi rỗng = xoá ghi chú.
+    note: str | None = Field(None, max_length=2000)
+
+
+@router.patch(
+    "/{place_id}/contact",
+    response_model=ApiResponse[PlaceResponse],
+    summary="Ghi lại đã liên hệ tới đâu (đã gọi / quan tâm / loại)",
+)
+def set_contact(
+    place_id: int,
+    payload: ContactRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(current_user),
+) -> ApiResponse[PlaceResponse]:
+    return ApiResponse.ok(PlaceService(db).set_contact(place_id, payload.status, payload.note))
+
+
 @router.get(
     "/queries",
     response_model=ApiResponse[list[QueryCountResponse]],
@@ -96,20 +123,19 @@ def list_countries(
 
 # --- nhịp cho luồng SSE ở dưới ---
 #
-# `pulse()` phải quét TOÀN BẢNG: ba cột mốc thời gian nó lấy `max()` đều không có
-# chỉ mục, nên Postgres không còn lựa chọn nào khác ngoài seq scan (thêm chỉ mục thì
-# phải migration — việc khác). Với bảng vài trăm nghìn dòng, một lượt quét như vậy
-# tốn hàng trăm mili-giây.
+# `pulse()` giờ đã rẻ (V0006 thêm chỉ mục cho ba cột `max()`, và câu lệnh bỏ hẳn
+# `count(*)` — thứ ép quét toàn bảng mà không ai dùng tới). Đo ở 300.000 dòng:
+# 70 ms trước, 2,4 ms sau.
 #
-# Hai thứ khuếch đại chi phí đó lên thành sự cố:
-#   1. Nó là SQLAlchemy ĐỒNG BỘ nằm trong một `async def`. Gọi thẳng trên event loop
-#      của uvicorn là cả tiến trình đứng im suốt lượt quét — mọi request khác xếp
-#      hàng sau nó, kể cả /health mà Docker dùng để quyết định container còn sống.
-#      Vì vậy phần chạm DB được đẩy hẳn sang threadpool.
-#   2. Mỗi tab đang mở là một kết nối SSE riêng, tức N tab = N lượt quét mỗi nhịp,
-#      mà N tab đó luôn hỏi cùng một câu và nhận cùng một đáp án. Bộ đệm dưới đây
-#      gom chúng lại: trong `_PULSE_TTL` giây, tab nào tới sau dùng lại kết quả của
-#      tab đầu tiên. Tải xuống DB vì thế bị chặn trên, không còn tăng theo số tab.
+# Hai lớp bảo vệ dưới đây vẫn giữ, vì chúng chống lại thứ khác chứ không phải
+# chống chậm:
+#   1. SQLAlchemy ĐỒNG BỘ nằm trong `async def` thì dù nhanh cỡ nào cũng vẫn chặn
+#      event loop của uvicorn. 2,4 ms mỗi giây là không đáng kể, nhưng một lần DB
+#      chậm bất thường (khoá, checkpoint) sẽ làm đứng cả tiến trình. Threadpool là
+#      để chuyện đó không bao giờ thành sự cố.
+#   2. Mỗi tab là một kết nối SSE riêng, và N tab luôn hỏi cùng một câu để nhận
+#      cùng một đáp án. Bộ đệm gom chúng lại: tải xuống DB bị chặn trên chứ không
+#      tăng theo số tab.
 #
 # Cố ý KHÔNG khoá (asyncio.Lock) quanh bộ đệm: hai kết nối trùng đúng khoảnh khắc
 # hết hạn sẽ cùng đi hỏi, và đó chính xác là hành vi cũ — không tệ hơn. Đổi lại
@@ -125,14 +151,13 @@ def _doc_nhip() -> tuple[dict[str, object], bool]:
     try:
         from app.modules.scraper.status.repository import WorkerStatusRepository
 
-        total, max_id, last_change = PlaceRepository(db).pulse()
+        max_id, last_change = PlaceRepository(db).pulse()
         worker = WorkerStatusRepository(db).get_or_create()
         dang_quet = worker.current_job_id is not None
     finally:
         db.close()
     return (
         {
-            "total": total,
             "max_id": max_id,
             "last_change": last_change.isoformat() if last_change else None,
         },
