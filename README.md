@@ -12,13 +12,42 @@ Frontend nằm ở repo riêng: [`bot_craw_data_fe`](https://github.com/MaiAnhKh
 
 ## Chạy nhanh
 
+Clone hai repo **nằm cạnh nhau**, rồi chạy một lệnh duy nhất trong repo backend:
+
 ```bash
-cp .env.example .env          # sửa BCD_JWT_SECRET_KEY và BCD_ADMIN_PASSWORD
-docker compose up -d --build
+git clone https://github.com/MaiAnhKhoi/bot_craw_data_be.git ago_bot_craw_data
+git clone https://github.com/MaiAnhKhoi/bot_craw_data_fe.git bot_craw_data_fe
 ```
 
-Xong là có: API `http://localhost:8000` (tài liệu `/docs`), worker đang chạy, tài
-khoản quản trị tạo sẵn từ `BCD_ADMIN_USERNAME` / `BCD_ADMIN_PASSWORD`.
+```bash
+cd ago_bot_craw_data && cp .env.example .env
+```
+
+Sửa `BCD_JWT_SECRET_KEY` và `BCD_ADMIN_PASSWORD` trong `.env`, rồi:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.web.yml up -d --build
+```
+
+Xong là có đủ 5 dịch vụ:
+
+| Dịch vụ | Địa chỉ | Vai trò |
+|---|---|---|
+| `web` | **http://localhost:3000** | Giao diện — mọi người dùng vào đây |
+| `api` | http://localhost:8000/docs | REST API + tài liệu tương tác |
+| `worker` | — | Cào Google Maps, **chỉ được chạy đúng một bản** |
+| `db` | localhost:5432 | PostgreSQL |
+| `migrate` | — | Chạy `alembic upgrade head` một lần rồi thoát |
+
+Tài khoản quản trị được tạo tự động ở lần khởi động đầu từ `BCD_ADMIN_USERNAME` /
+`BCD_ADMIN_PASSWORD`.
+
+Ngại gõ dài thì bỏ chú thích dòng `COMPOSE_FILE=...` trong `.env`, sau đó chỉ cần
+`docker compose up -d --build`. Chỉ muốn backend (không có giao diện) thì dùng
+`docker compose up -d --build` khi chưa bật dòng đó.
+
+Trình duyệt chỉ nói chuyện với `web`; `web` mới gọi sang `api` trong mạng nội bộ của
+Docker. Nhờ vậy mọi request là same-origin nên không bao giờ dính CORS.
 
 Chạy tay khi phát triển:
 

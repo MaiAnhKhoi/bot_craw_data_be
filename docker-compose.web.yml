@@ -1,0 +1,53 @@
+# =====================================================================
+# Lớp phủ thêm GIAO DIỆN WEB (repo bot_craw_data_fe) vào stack backend.
+#
+# Tách thành file riêng chứ không nhét vào docker-compose.yml vì frontend nằm ở
+# MỘT REPO KHÁC: ai chỉ clone mỗi backend vẫn phải `docker compose up` được.
+#
+# Điều kiện: hai repo nằm CẠNH NHAU trên đĩa
+#     <thư mục cha>/ago_bot_craw_data   (repo này)
+#     <thư mục cha>/bot_craw_data_fe    (frontend)
+#
+# Chạy cả backend lẫn frontend:
+#     docker compose -f docker-compose.yml -f docker-compose.web.yml up -d --build
+#
+# Gõ dài thì đặt một dòng trong .env rồi `docker compose up -d --build` là đủ:
+#     COMPOSE_FILE=docker-compose.yml:docker-compose.web.yml
+# =====================================================================
+
+services:
+  web:
+    build:
+      # Thư mục frontend nằm ngoài repo này — Compose cho phép context ở ngoài
+      # project dir, nhưng đường dẫn tính theo VỊ TRÍ FILE COMPOSE này.
+      context: ../bot_craw_data_fe
+      args:
+        # ★ Phải truyền lúc BUILD, không phải lúc chạy: Next gọi `rewrites()` khi
+        # build rồi ghi kết quả vào manifest, server standalone chỉ đọc lại bản đã
+        # ghi. Đặt biến lúc chạy thôi thì proxy /api vẫn trỏ localhost:8000 —
+        # tức là trỏ vào chính container web, và mọi lời gọi API đều bị từ chối.
+        # `api` là tên service, cũng là hostname bên trong mạng compose.
+        API_BASE_URL: http://api:8000
+    container_name: botcraw-web
+    restart: unless-stopped
+    environment:
+      API_BASE_URL: http://api:8000
+      NODE_ENV: production
+    ports:
+      - "${BCD_WEB_PORT:-3000}:3000"
+    # Trình duyệt chỉ nói chuyện với `web`; `web` mới gọi sang `api` trong mạng nội
+    # bộ. Nhờ vậy mọi request của trình duyệt là same-origin -> không dính CORS, và
+    # SSE (EventSource) lẫn nút tải file — hai chỗ buộc phải gửi token qua query —
+    # không bao giờ đi xuyên tên miền khác.
+    depends_on:
+      api:
+        condition: service_healthy
+    # node:22-alpine không có curl; busybox wget thì có sẵn.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/login"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    # Next standalone chạy khá gọn; 512m là thừa cho vài người dùng trong văn phòng.
+    mem_limit: 512m
