@@ -41,9 +41,12 @@ Thumbs.db
 .DS_Store
 
 # --- Còn lại từ bản CLI đời đầu (gmaps_scraper): dữ liệu và danh sách từ khoá chạy tay ---
-data/
-exports/
-logs/
-config.yaml
-keywords.txt
-locations.txt
+# DẤU / Ở ĐẦU LÀ BẮT BUỘC: viết `data/` trần thì Git bỏ qua MỌI thư mục tên data ở
+# mọi độ sâu — và nó đã nuốt mất `app/modules/geo/data/geo.json`, khiến bản clone
+# mới không có dữ liệu địa giới và API không khởi động nổi. Chỉ chặn ở thư mục gốc.
+/data/
+/exports/
+/logs/
+/config.yaml
+/keywords.txt
+/locations.txt
