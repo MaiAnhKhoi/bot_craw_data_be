@@ -45,6 +45,56 @@ CONTINENT_PATCH = {
 }
 
 
+# Tên hiển thị + chuỗi truy vấn ghi đè.
+#
+# Hai lý do phải có bảng này:
+#  1. Tên ISO 3166-1 là tên NGOẠI GIAO, không phải thứ người ta gõ vào Google Maps:
+#     "Korea, Republic of", "Taiwan, Province of China", "Lao People's Democratic
+#     Republic". Ghép vào truy vấn cho ra chuỗi lạ và kết quả kém.
+#  2. Tên có DẤU PHẨY làm vỡ việc nhận diện quốc gia từ đuôi chuỗi địa điểm —
+#     15 nước dính, trong đó có Hàn Quốc và Đài Loan.
+#
+# Bản dịch tiếng Việt tự động của pycountry cũng phiên âm rất lạ với nhóm này
+# ("Bắc Hàn, Cộng hoà Nhân dân Dân chủ", "Phi-li-pi-nợ"), nên sửa luôn tên hiển thị
+# cho các thị trường hay dùng.
+NAME_OVERRIDE: dict[str, tuple[str, str]] = {
+    # mã: (tên hiển thị tiếng Việt, chuỗi dùng trong truy vấn Google Maps)
+    "KR": ("Hàn Quốc", "South Korea"),
+    "KP": ("Triều Tiên", "North Korea"),
+    "TW": ("Đài Loan", "Taiwan"),
+    "IR": ("Iran", "Iran"),
+    "BO": ("Bolivia", "Bolivia"),
+    "VE": ("Venezuela", "Venezuela"),
+    "MD": ("Moldova", "Moldova"),
+    "TZ": ("Tanzania", "Tanzania"),
+    "PS": ("Palestine", "Palestine"),
+    "CD": ("CHDC Congo", "DR Congo"),
+    "CG": ("Congo", "Republic of the Congo"),
+    "FM": ("Micronesia", "Micronesia"),
+    "VG": ("Quần đảo Virgin thuộc Anh", "British Virgin Islands"),
+    "VI": ("Quần đảo Virgin thuộc Mỹ", "U.S. Virgin Islands"),
+    "SH": ("Saint Helena", "Saint Helena"),
+    "BQ": ("Bonaire", "Bonaire"),
+    "SY": ("Syria", "Syria"),
+    "MK": ("Bắc Macedonia", "North Macedonia"),
+    # Thị trường hay dùng — tên tự động đọc rất lạ
+    "LA": ("Lào", "Laos"),
+    "RU": ("Nga", "Russia"),
+    "JP": ("Nhật Bản", "Japan"),
+    "PH": ("Philippines", "Philippines"),
+    "ID": ("Indonesia", "Indonesia"),
+    "MY": ("Malaysia", "Malaysia"),
+    "SG": ("Singapore", "Singapore"),
+    "KH": ("Campuchia", "Cambodia"),
+    "MM": ("Myanmar", "Myanmar"),
+    "NL": ("Hà Lan", "Netherlands"),
+    "GB": ("Anh", "United Kingdom"),
+    "AE": ("UAE", "United Arab Emirates"),
+    "IN": ("Ấn Độ", "India"),
+    "VN": ("Việt Nam", "Việt Nam"),
+}
+
+
 def country_name_vi() -> dict[str, str]:
     """Tên quốc gia tiếng Việt lấy từ bản dịch gettext đi kèm pycountry."""
     import gettext
@@ -67,15 +117,16 @@ def build_countries() -> list[dict]:
             continent = CONTINENT_PATCH.get(code)
         if not continent:
             continue
+        display, query = NAME_OVERRIDE.get(code, (vi.get(code) or c.name, c.name))
         out.append(
             {
                 "code": code,
                 "continent": continent,
-                "name": vi.get(code) or c.name,
+                "name": display,
                 "name_en": c.name,
                 # Chuỗi thật sự ghép vào truy vấn Google Maps. Dùng tên tiếng Anh cho
                 # nước ngoài vì Maps nhận diện tốt hơn tên đã dịch.
-                "query": c.name,
+                "query": query,
                 "levels": 1,
             }
         )
@@ -131,7 +182,6 @@ def main() -> int:
     for c in countries:
         if c["code"] == "VN":
             c["levels"] = 3          # tỉnh -> phường/xã
-            c["query"] = "Việt Nam"
         elif provinces.get(c["code"]):
             c["levels"] = 2          # chỉ tới cấp 1
 
@@ -147,6 +197,12 @@ def main() -> int:
         "provinces": provinces,
         "wards": vn_wards,
     }
+
+    # Dấu phẩy trong chuỗi truy vấn làm vỡ việc nhận diện quốc gia từ đuôi chuỗi
+    # địa điểm. Thà dừng ở đây còn hơn để lọt ra rồi âm thầm quét nhầm nước.
+    con_dau_phay = [c["code"] for c in countries if "," in c["query"]]
+    if con_dau_phay:
+        raise SystemExit(f"Còn {len(con_dau_phay)} quốc gia có dấu phẩy trong `query`: {con_dau_phay}")
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")

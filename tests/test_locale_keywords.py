@@ -38,6 +38,44 @@ def test_ten_tieng_anh_cung_khop():
     assert geo.resolve_country("Hanoi, Viet Nam")["code"] == "VN"
 
 
+@pytest.mark.parametrize(
+    ("location", "expected"),
+    [
+        ("Seoul, South Korea", "KR"),
+        ("Taipei, Taiwan", "TW"),
+        # Tên ISO có dấu phẩy BÊN TRONG — chỉ lấy đoạn cuối thì ra "Republic of"
+        # và không khớp gì cả, rồi âm thầm rơi về vi/vn tức là quét nhầm sang
+        # Việt Nam. 15 nước dính lỗi này, gồm cả Hàn Quốc và Đài Loan.
+        ("Seoul, Korea, Republic of", "KR"),
+        ("Taipei, Taiwan, Province of China", "TW"),
+        ("Tehran, Iran, Islamic Republic of", "IR"),
+        ("Dar es Salaam, Tanzania, United Republic of", "TZ"),
+    ],
+)
+def test_ten_quoc_gia_nhieu_doan_van_nhan_ra(location, expected):
+    assert geo.resolve_country(location)["code"] == expected
+    assert geo.locale_for_location(location)[1] == expected.lower()
+
+
+def test_khong_quoc_gia_nao_con_dau_phay_trong_chuoi_truy_van():
+    """Dấu phẩy trong `query` làm vỡ việc nhận diện từ đuôi chuỗi địa điểm.
+
+    `scripts/build_geo_data.py` cũng chặn điều này lúc sinh dữ liệu; test ở đây là
+    lưới thứ hai cho trường hợp ai đó sửa tay `geo.json`.
+    """
+    xau = [c["code"] for c in geo.load().countries if "," in c["query"]]
+    assert xau == [], f"các nước còn dấu phẩy: {xau}"
+
+
+def test_ten_hien_thi_cua_thi_truong_chinh_doc_duoc():
+    """Bản dịch tự động cho ra "Cộng hoà Nam Hàn", "Phi-li-pi-nợ" — sửa tay."""
+    by_code = {c["code"]: c for c in geo.load().countries}
+    assert by_code["KR"]["name"] == "Hàn Quốc"
+    assert by_code["KR"]["query"] == "South Korea"
+    assert by_code["TW"]["name"] == "Đài Loan"
+    assert by_code["JP"]["name"] == "Nhật Bản"
+
+
 # ---------- chọn hl/gl ----------
 def test_viet_nam_dung_tieng_viet():
     assert geo.locale_for("VN") == ("vi", "vn")

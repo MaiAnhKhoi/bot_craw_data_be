@@ -181,9 +181,15 @@ def resolve_country(location: str | None) -> dict | None:
         return None
     index = _country_index()
     parts = [p.strip() for p in location.split(",") if p.strip()]
-    # Thử đoạn cuối trước, rồi mới thử cả chuỗi (trường hợp chỉ ghi mỗi tên nước).
-    for candidate in ([parts[-1]] if parts else []) + [location]:
-        found = index.get(fold_text(candidate))
+    if not parts:
+        return None
+    # Thử các ĐUÔI dài dần: "Republic of" -> "Korea, Republic of" -> cả chuỗi.
+    # Chỉ lấy mỗi đoạn cuối là không đủ: tên ISO của 15 nước có dấu phẩy bên trong
+    # ("Korea, Republic of", "Taiwan, Province of China"), và khi đó quốc gia không
+    # được nhận ra -> rơi về vi/vn -> quét nhầm sang Việt Nam mà không báo lỗi.
+    # Đuôi NGẮN NHẤT khớp là đúng: chuỗi luôn kết thúc bằng tên quốc gia.
+    for i in range(len(parts) - 1, -1, -1):
+        found = index.get(fold_text(", ".join(parts[i:])))
         if found:
             return found
     return None
