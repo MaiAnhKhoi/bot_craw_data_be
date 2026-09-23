@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -69,14 +70,34 @@ def overview(db: Session = Depends(get_db), _: User = Depends(current_user)) -> 
         "address": int(db.execute(select(func.count(Place.id)).where(Place.address.isnot(None))).scalar_one()),
     }
 
-    since = datetime.now(UTC) - timedelta(days=13)
+    # ⚠️ "Ngày" ở đây phải do MỘT múi giờ duy nhất định nghĩa, và múi giờ đó là
+    # `settings.timezone` (giờ VN) — giờ mà người xem biểu đồ đang sống.
+    #
+    # Trước đây hai vế so với nhau bằng hai lịch khác nhau: `func.date()` để
+    # Postgres tự quyết, mà container `db` không đặt TZ nên nó cắt ngày theo UTC;
+    # còn `date.today()` chạy trong container app (ENV TZ=Asia/Ho_Chi_Minh) nên trả
+    # về ngày VN. Lệch 7 tiếng, và hậu quả rơi đúng vào ca đêm: mọi địa điểm quét
+    # trong khoảng 00:00-07:00 giờ VN bị Postgres xếp vào ngày HÔM TRƯỚC, nên ô
+    # "Hôm nay" hiện 0 trong khi worker vừa cào được vài chục dòng.
+    #
+    # Ép ngay trong câu truy vấn thay vì đặt TZ cho container db: cắt ngày là quy
+    # tắc NGHIỆP VỤ của biểu đồ này, để nó phụ thuộc vào biến môi trường của một
+    # container khác thì một hôm nào đó dựng lại hạ tầng là sai lại, âm thầm.
+    ten_mui_gio = get_settings().timezone
+    mui_gio = ZoneInfo(ten_mui_gio)
+    today = datetime.now(mui_gio).date()
+    # Mốc dưới là 00:00 giờ VN của ngày đầu khung, không phải "13 ngày trước tính từ
+    # bây giờ" — kiểu cũ cắt mất phần đầu của chính ngày xa nhất trên biểu đồ.
+    since = datetime.combine(today - timedelta(days=13), time.min, tzinfo=mui_gio)
+    # Lọc vẫn chạy trên cột GỐC (`first_seen_at >= since`) để còn dùng được chỉ mục;
+    # chỉ phần gom nhóm mới đổi sang giờ VN.
+    ngay_vn = func.date(func.timezone(ten_mui_gio, Place.first_seen_at))
     day_rows = db.execute(
-        select(func.date(Place.first_seen_at), func.count(Place.id))
+        select(ngay_vn, func.count(Place.id))
         .where(Place.first_seen_at >= since)
-        .group_by(func.date(Place.first_seen_at))
+        .group_by(ngay_vn)
     ).all()
     per_day = {str(d): int(c) for d, c in day_rows}
-    today = date.today()
     last_14 = [
         DayCount(date=str(today - timedelta(days=i)), count=per_day.get(str(today - timedelta(days=i)), 0))
         for i in range(13, -1, -1)

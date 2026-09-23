@@ -161,5 +161,54 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # ★ SAO LƯU DATABASE — VÒNG LẶP BÙ GIỜ, CỐ Ý KHÔNG PHẢI CRON.
+  # Máy chạy hệ thống này là máy văn phòng và nó bị TẮT vào ban đêm. Một lịch hẹn đúng
+  # 3h sáng thì hôm nào máy tắt là hôm đó không có bản sao lưu nào — và cái giá thật
+  # không phải là mất một bản, mà là cả năm trời tưởng mình đang được bảo vệ.
+  # Script hỏi mỗi 30 phút "bản gần nhất bao nhiêu tuổi" và chạy bù ngay khi quá
+  # BCD_BACKUP_EVERY_HOURS: bật máy lúc 9h sáng là 9h có bản sao lưu.
+  # Cách đọc log, nơi để file và LỆNH RESTORE đầy đủ: docs/BACKUP.md
+  backup:
+    # ★ PHẢI đúng image của service `db`. pg_dump chỉ bảo đảm làm việc với server CÙNG
+    # major version; dump server 16 bằng client 17 (hay client của Debian) vẫn ra một
+    # file trông bình thường, và chỉ tới lúc pg_restore — tức lúc đang mất dữ liệu —
+    # mới biết là nó không dùng được.
+    image: postgres:16-alpine
+    container_name: botcraw-backup
+    restart: unless-stopped
+    # required: false -> giống các service trên, máy vừa clone chưa có .env vẫn chạy.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # pg_dump đọc thẳng bốn biến này nên không phải nhét mật khẩu vào dòng lệnh (chỗ
+      # nó lộ ra trong `docker top`). Ghim cứng như BCD_DATABASE_URL ở trên: trong mạng
+      # compose, host của DB là TÊN SERVICE `db`, còn localhost là chính container này.
+      PGHOST: db
+      PGUSER: botcraw
+      PGPASSWORD: botcraw
+      PGDATABASE: botcraw
+      # Thiếu dòng này thì container chạy giờ UTC và mốc thời gian trong tên file lệch 7
+      # tiếng so với đồng hồ người dùng — bản dump lúc 9h sáng lại mang tên 02h.
+      TZ: ${BCD_TIMEZONE:-Asia/Ho_Chi_Minh}
+      BCD_BACKUP_EVERY_HOURS: ${BCD_BACKUP_EVERY_HOURS:-24}
+      BCD_BACKUP_KEEP: ${BCD_BACKUP_KEEP:-14}
+    volumes:
+      - ./scripts:/scripts:ro
+      # Bind-mount ra host là CÓ CHỦ Ý, không dùng named volume: người dùng phải mở
+      # được thư mục này bằng Explorer để tự copy lên Drive. File nằm trong named volume
+      # thì chôn trong máy ảo của Docker Desktop, coi như không lấy ra được.
+      - ./backups:/backups
+    # Ghi đè entrypoint của image postgres (mặc định nó đi dựng một server mới).
+    # `tr -d` là lớp chống Windows: repo clone với core.autocrlf=true sẽ cho file .sh
+    # xuống dòng kiểu CRLF, và sh trong container chết ngay dòng đầu vì ký tự CR thừa —
+    # lỗi báo ra là "not found", không liên quan gì tới nguyên nhân thật.
+    entrypoint: ["/bin/sh", "-c", "tr -d '\r' < /scripts/backup_loop.sh > /tmp/backup_loop.sh; exec /bin/sh /tmp/backup_loop.sh"]
+    # pg_dump -Fc nén theo luồng, không giữ cả bản dump trong RAM. 256m là thừa thãi.
+    mem_limit: 256m
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   botcraw_pgdata:

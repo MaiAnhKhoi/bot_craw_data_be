@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import NotFoundError
@@ -10,15 +8,29 @@ from app.core.text import fold_text
 from app.modules.scraper.engine.liveness import LivenessInput, evaluate
 from app.modules.scraper.place.entity import PLACE_PENDING, Place
 from app.modules.scraper.place.repository import PlaceFilter, PlaceRepository
-from app.modules.scraper.place.response import PlaceResponse
+from app.modules.scraper.place.response import (
+    CountryCountResponse,
+    PlaceResponse,
+    QueryCountResponse,
+)
 
 # `fold_text` sống ở app/core/text.py vì module geo cũng dùng chung; giữ lại tên
 # ở đây để các chỗ đang import từ service không phải sửa.
-__all__ = ["PlaceService", "build_search_text", "fold_text", "recompute_liveness"]
+__all__ = ["PlaceService", "build_search_text", "fold_text", "recompute_liveness", "sort_countries"]
 
 
 def build_search_text(name: str | None, address: str | None, category: str | None = None) -> str:
     return fold_text(" ".join(x for x in (name, address, category) if x))
+
+
+def sort_countries(items: list[CountryCountResponse]) -> list[CountryCountResponse]:
+    """Nước có nhiều dữ liệu nhất lên đầu — đó là nước người dùng chọn hằng ngày,
+    không nên bắt họ cuộn tìm.
+
+    Bằng nhau thì xếp theo tên, và so tên ở dạng ĐÃ BỎ DẤU: xếp theo mã Unicode
+    thô sẽ đẩy "Ấn Độ" xuống dưới tận "Zimbabwe" vì "Ấ" nằm sau "Z".
+    """
+    return sorted(items, key=lambda c: (-c.count, fold_text(c.name)))
 
 
 def recompute_liveness(place: Place) -> None:
@@ -51,6 +63,16 @@ class PlaceService:
         kw = self.repo.keywords_for(p.id for p in rows)
         return Page.build([PlaceResponse.of(p, kw.get(p.id, [])) for p in rows], params, total)
 
+    def queries(self) -> list[QueryCountResponse]:
+        """Mọi lượt tìm đã sinh ra dữ liệu. Repository đã sắp sẵn theo số địa
+        điểm giảm dần — lượt thu được nhiều nhất là lượt hay được soi nhất."""
+        return [QueryCountResponse(query=q, count=n) for q, n in self.repo.query_counts()]
+
+    def countries(self) -> list[CountryCountResponse]:
+        return sort_countries(
+            [CountryCountResponse.of(code, n) for code, n in self.repo.country_counts()]
+        )
+
     def get(self, place_id: int) -> PlaceResponse:
         place = self.repo.by_id(place_id)
         if place is None:
@@ -70,7 +92,11 @@ class PlaceService:
         place.status = PLACE_PENDING
         place.attempts = 0
         place.last_error = None
-        place.last_verified_at = datetime.now(UTC)
+        # CỐ Ý không đụng `last_verified_at`. Nó có nghĩa là "lần cuối đã XÁC MINH
+        # địa điểm này còn sống", mà ở đây chưa có request nào tới Google cả —
+        # mới chỉ xếp hàng. Ghi mốc ở đây là tự nói dối: bản ghi trông như vừa
+        # được kiểm tra trong khi thực tế chưa, và nó lên thẳng API lẫn file xuất.
+        # Worker sẽ đặt mốc thật sau khi quét xong (xem `apply_detail`).
         self.db.commit()
         self.db.refresh(place)
         kw = self.repo.keywords_for([place.id])

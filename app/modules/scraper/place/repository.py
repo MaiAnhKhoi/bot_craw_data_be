@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
@@ -19,18 +20,76 @@ SORTABLE = {
     "scraped_at": Place.scraped_at,
 }
 
+# Số địa điểm theo từng quốc gia. Bỏ dòng chưa biết quốc gia: "chưa rõ" không phải
+# một lựa chọn lọc, đưa vào ô chọn chỉ khiến người dùng bấm vào rồi không hiểu.
+# GROUP BY chạy dưới Postgres (có ix_places_country_code) — bảng cỡ hàng trăm nghìn
+# dòng mà nạp ra Python đếm thì endpoint này thành chỗ nghẽn.
+COUNTRY_COUNTS = (
+    select(Place.country_code, func.count(Place.id))
+    .where(Place.country_code.isnot(None))
+    .group_by(Place.country_code)
+)
+
+
+# Các LƯỢT TÌM đã sinh ra dữ liệu, kèm số địa điểm.
+#
+# `PlaceKeyword.keyword` lưu CẢ CHUỖI TRUY VẤN ("fruit wholesaler Phuket, Thailand"),
+# không phải riêng từ khoá — đó là thứ duy nhất trả lời được "địa điểm này ra từ
+# lượt tìm nào". CỐ Ý KHÔNG giới hạn số dòng: ô lọc trước đây mượn tạm
+# `overview.top_keywords` vốn có LIMIT 10, nên quét từ tỉnh thứ 11 trở đi là những
+# lượt đó biến mất khỏi ô lọc mà không có dấu hiệu gì — người dùng tưởng không lọc
+# được, hoặc tệ hơn là tưởng không có dữ liệu.
+QUERY_COUNTS = (
+    select(PlaceKeyword.keyword, func.count(PlaceKeyword.place_id))
+    .group_by(PlaceKeyword.keyword)
+    .order_by(func.count(PlaceKeyword.place_id).desc(), PlaceKeyword.keyword)
+)
+
+
+# Số id tối đa nhét vào MỘT câu `IN (...)` khi tra từ khoá.
+#
+# Đây là TRẦN CỨNG của giao thức PostgreSQL chứ không phải chuyện nhanh chậm: số
+# tham số của một câu lệnh được đếm bằng int16, nên câu thứ 65.536 trở đi chết bằng
+# `number of parameters must be between 0 and 65535` — lỗi ở tầng giao thức, không
+# có cách nào bắt rồi chạy tiếp. Mà `export_max_rows` mặc định là 100.000 và chỉ
+# chặn khi VƯỢT, nên một lần xuất đúng 100.000 dòng là hợp lệ về nghiệp vụ nhưng
+# 500 về kỹ thuật.
+#
+# 5.000 chứ không phải sát trần 65.535: chừa chỗ cho lần sau có ai thêm điều kiện
+# (và tham số) vào cùng câu lệnh này, đồng thời câu `IN` ngắn thì Postgres lập kế
+# hoạch nhanh hơn. Chia lô nhiều hơn vài lượt không đáng kể so với việc ghi file.
+KEYWORD_BATCH = 5_000
+
+
+def normalize_country(value: str | None) -> str | None:
+    """Chuẩn hoá mã quốc gia trước khi đem đi so sánh.
+
+    Trong DB `country_code` luôn viết hoa (xem `writer.resolve_place_country`), còn
+    giao diện gửi lên "th", "Th", hay chuỗi rỗng khi người dùng bỏ chọn. So thẳng
+    thì `country=th` trả về bảng RỖNG mà không có lỗi nào báo — trông y hệt như
+    "nước này chưa quét được gì", nên sẽ không ai đi tìm nguyên nhân.
+    """
+    code = (value or "").strip().upper()
+    return code or None
+
 
 @dataclass
 class PlaceFilter:
     q: str | None = None
     job_id: int | None = None
     keyword: str | None = None
+    country: str | None = None
     liveness: list[str] = field(default_factory=list)
     business_status: str | None = None
     has_phone: bool | None = None
     has_website: bool | None = None
     min_rating: float | None = None
     sort: str = "-liveness"
+
+    def __post_init__(self) -> None:
+        # Chuẩn hoá ở ngay chỗ dựng bộ lọc chứ không ở router: cả API danh sách lẫn
+        # API xuất file đều dựng PlaceFilter, và nơi nào quên gọi thì hỏng âm thầm.
+        self.country = normalize_country(self.country)
 
 
 class PlaceRepository:
@@ -50,6 +109,8 @@ class PlaceRepository:
 
             needle = f"%{fold_text(f.q)}%"
             stmt = stmt.where(or_(Place.search_text.ilike(needle), Place.name.ilike(f"%{f.q}%")))
+        if f.country:
+            stmt = stmt.where(Place.country_code == f.country)
         if f.liveness:
             stmt = stmt.where(Place.liveness_label.in_(f.liveness))
         if f.business_status:
@@ -85,19 +146,66 @@ class PlaceRepository:
         result = self.db.execute(stmt.execution_options(stream_results=True, yield_per=chunk))
         yield from result.scalars()
 
+    def pulse(self) -> tuple[int, int | None, datetime | None]:
+        """Ba con số đủ để biết bảng địa điểm có gì mới chưa.
+
+        Dùng cho luồng SSE nên phải RẺ và chạy rất thường xuyên. Gom hết vào MỘT
+        câu lệnh để Postgres chỉ quét bảng một lượt:
+          * `count(*)` — có thêm địa điểm mới không
+          * `max(id)`  — phân biệt "thêm 1 xoá 1" với "không có gì đổi"
+          * mốc thời gian đổi gần nhất
+
+        Mốc thời gian phải lấy CẢ BA cột, không chỉ `last_seen_at`. Đo thực tế:
+        quét Chiang Mai, pha tìm kiếm nhét 12 địa điểm vào trong khoảng một giây
+        (một lần đổi `last_seen_at`), rồi pha chi tiết chạy tiếp gần hai phút —
+        mỗi địa điểm được bổ sung website, chấm lại điểm sống/chết. Pha dài nhất
+        đó chỉ ghi `last_verified_at`/`website_checked_at`, nên nếu chỉ nhìn
+        `last_seen_at` thì bảng đứng im suốt cả pha, đúng lúc người dùng đang
+        ngồi nhìn nó chạy.
+        """
+        row = self.db.execute(
+            select(
+                func.count(Place.id),
+                func.max(Place.id),
+                func.greatest(
+                    func.max(Place.last_seen_at),       # thêm địa điểm mới
+                    func.max(Place.last_verified_at),   # pha chi tiết đã xử lý xong
+                    func.max(Place.website_checked_at), # kiểm tra website xong
+                ),
+            )
+        ).one()
+        return int(row[0]), row[1], row[2]
+
+    def query_counts(self) -> list[tuple[str, int]]:
+        """(chuỗi truy vấn, số địa điểm) cho MỌI lượt tìm đã có dữ liệu."""
+        return [(kw, int(n)) for kw, n in self.db.execute(QUERY_COUNTS).all()]
+
+    def country_counts(self) -> list[tuple[str, int]]:
+        """(mã quốc gia, số địa điểm) cho những nước THẬT SỰ có dữ liệu."""
+        return [(code, int(n)) for code, n in self.db.execute(COUNTRY_COUNTS).all()]
+
     def by_id(self, place_id: int) -> Place | None:
         return self.db.execute(select(Place).where(Place.id == place_id)).scalar_one_or_none()
 
     def keywords_for(self, ids: Iterable[int]) -> dict[int, list[str]]:
+        """Từ khoá của từng địa điểm, tra theo LÔ (xem `KEYWORD_BATCH`).
+
+        Chia lô nằm ở đây chứ không ở chỗ gọi: cả màn danh sách, màn chi tiết lẫn
+        API xuất file đều đi qua hàm này, vá riêng một nơi thì hai nơi kia vẫn ôm
+        nguyên quả bom chờ tới ngày dữ liệu đủ lớn mới nổ.
+
+        Cắt lô theo place_id nên MỌI từ khoá của một địa điểm luôn nằm gọn trong
+        cùng một lô — thứ tự `ORDER BY keyword` của từng danh sách vì thế không đổi
+        so với lúc chạy một câu duy nhất.
+        """
         ids = list(ids)
-        if not ids:
-            return {}
         out: dict[int, list[str]] = {i: [] for i in ids}
-        rows = self.db.execute(
-            select(PlaceKeyword.place_id, PlaceKeyword.keyword)
-            .where(PlaceKeyword.place_id.in_(ids))
-            .order_by(PlaceKeyword.keyword)
-        ).all()
-        for place_id, keyword in rows:
-            out.setdefault(place_id, []).append(keyword)
+        for dau in range(0, len(ids), KEYWORD_BATCH):
+            rows = self.db.execute(
+                select(PlaceKeyword.place_id, PlaceKeyword.keyword)
+                .where(PlaceKeyword.place_id.in_(ids[dau : dau + KEYWORD_BATCH]))
+                .order_by(PlaceKeyword.keyword)
+            ).all()
+            for place_id, keyword in rows:
+                out.setdefault(place_id, []).append(keyword)
         return out

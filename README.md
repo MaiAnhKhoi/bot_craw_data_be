@@ -29,7 +29,7 @@ Sửa `BCD_JWT_SECRET_KEY` và `BCD_ADMIN_PASSWORD` trong `.env`, rồi:
 docker compose -f docker-compose.yml -f docker-compose.web.yml up -d --build
 ```
 
-Xong là có đủ 5 dịch vụ:
+Xong là có đủ 6 dịch vụ:
 
 | Dịch vụ | Địa chỉ | Vai trò |
 |---|---|---|
@@ -38,6 +38,7 @@ Xong là có đủ 5 dịch vụ:
 | `worker` | — | Cào Google Maps, **chỉ được chạy đúng một bản** |
 | `db` | localhost:5432 | PostgreSQL |
 | `migrate` | — | Chạy `alembic upgrade head` một lần rồi thoát |
+| `backup` | thư mục `backups/` | `pg_dump` mỗi ngày, tự dọn bản cũ |
 
 Tài khoản quản trị được tạo tự động ở lần khởi động đầu từ `BCD_ADMIN_USERNAME` /
 `BCD_ADMIN_PASSWORD`.
@@ -86,7 +87,8 @@ app/
     stats/             số liệu tổng quan
   workers/runner.py    vòng lặp worker — 1 luồng
 migrations/            Alembic là nguồn chuẩn của schema
-docs/                  API_CONTRACT · ANTI_BLOCK · LIVENESS
+scripts/               tiện ích chạy tay + backup_loop.sh (vòng lặp sao lưu DB)
+docs/                  API_CONTRACT · ANTI_BLOCK · LIVENESS · BACKUP
 ```
 
 Luật giống `eco_backend`: transaction nằm ở tầng **service** (router không commit,
@@ -151,6 +153,7 @@ Toàn bộ biến môi trường có tiền tố `BCD_`, xem `.env.example`. Đ�
 | `BCD_BROWSER_ENGINE` | `playwright` | Đổi `patchright` để che dấu vết sâu hơn |
 | `BCD_HEADLESS` | `true` | Đặt `false` khi cần nhìn trình duyệt lúc gỡ lỗi |
 | `BCD_EXPORT_MAX_ROWS` | 100000 | Trần số dòng cho một lần xuất file |
+| `BCD_BACKUP_EVERY_HOURS` / `KEEP` | 24 / 14 | Tuổi tối đa của bản sao lưu, và số bản giữ lại |
 
 ## Kiểm thử
 
@@ -166,9 +169,24 @@ Google đã đổi DOM: chạy test `live`, sửa selector trong `engine/detail.
 ## Vận hành
 
 - Máy: 8 GB RAM trở lên, để 24/7. Chiếm dụng thực tế ~1,7 GB (Chromium 0,8 + Postgres 0,4 + API 0,25 + web 0,2).
-- Sao lưu: `pg_dump` hằng đêm rồi đẩy lên Drive/R2. Máy văn phòng hỏng bất ngờ là rủi ro thật.
 - Tự bật lại: BIOS "Restore on AC Power Loss", tắt sleep, `restart: unless-stopped` trong compose.
 - Truy cập từ ngoài văn phòng: Cloudflare Tunnel (miễn phí, không cần IP tĩnh, không mở port).
+
+### Sao lưu
+
+Service `backup` chạy sẵn cùng stack, đổ `pg_dump -Fc` vào thư mục **`backups/`** và
+giữ 14 bản gần nhất. Lịch **không phải cron**: máy văn phòng tối bị tắt, nên nó hỏi
+"bản gần nhất bao nhiêu tuổi" mỗi 30 phút và chạy bù ngay khi quá 24 giờ — bật máy
+lúc 9h sáng là 9h có bản sao lưu, không mất trắng một ngày.
+
+```bash
+docker compose logs -f backup     # xem nó có còn chạy không
+```
+
+File dump nằm **cùng ổ cứng với database**, nên nó chống được xoá nhầm chứ không
+chống được hỏng ổ: mỗi tuần vẫn phải tự copy file mới nhất sang Drive hoặc ổ ngoài.
+Lệnh khôi phục đầy đủ và cách thử một bản dump trước khi tin nó:
+[`docs/BACKUP.md`](docs/BACKUP.md).
 
 ## Lưu ý pháp lý
 

@@ -49,6 +49,46 @@ def normalize_phone(raw: str | None, region: str = "VN") -> tuple[str | None, st
     return None, None, False
 
 
+def to_international(e164: str | None, fallback: str | None = None) -> str | None:
+    """`'+6622819715'` -> `'+66 2 281 9715'` — dạng để HIỂN THỊ.
+
+    Vì sao không hiện dạng nội địa (`phone_national`): dạng đó bỏ mã quốc gia đi,
+    nên số Bangkok ra `02 281 9715` còn số Hà Nội ra `024 3825 1234`. Đặt cạnh
+    nhau trong cùng một bảng thì không phân biệt nổi, mà người dùng là công ty
+    Việt Nam — nhìn `02 281 9715` ai cũng đọc thành số Việt Nam rồi bấm gọi
+    không được. Có `+66` đứng đầu thì vừa rõ nước vừa gọi được từ bất cứ đâu.
+
+    `phone_e164` đã có sẵn mã nước nên không cần biết vùng để đọc lại.
+    """
+    if not e164:
+        # `or None` cho nhất quán với cả module: "không có số" luôn là None, không
+        # bao giờ là chuỗi rỗng — nếu không thì nơi gọi phải kiểm tra hai kiểu.
+        return fallback or None
+    try:
+        parsed = phonenumbers.parse(e164, None)
+    except NumberParseException:
+        # Số rác vẫn phải hiện ra cho người dùng tự nhìn, đừng nuốt mất.
+        return fallback or e164
+    return phonenumbers.format_number(parsed, PhoneNumberFormat.INTERNATIONAL)
+
+
+def phone_country(e164: str | None) -> str | None:
+    """Mã quốc gia mà SỐ ĐIỆN THOẠI thuộc về, đọc ngược từ E.164.
+
+    Dùng để ĐỐI CHIẾU với quốc gia của địa điểm, không phải để sửa gì. Lệch nhau
+    không nhất thiết là lỗi: doanh nghiệp Thái niêm yết số di động Việt Nam là
+    chuyện thật và thường gặp trong ngành xuất nhập khẩu — đó là đầu mối có người
+    Việt phụ trách, tức một lead TỐT HƠN. Nên việc của hệ thống là chỉ ra, còn
+    kết luận để người dùng.
+    """
+    if not e164:
+        return None
+    try:
+        return phonenumbers.region_code_for_number(phonenumbers.parse(e164, None))
+    except NumberParseException:
+        return None
+
+
 def clean_company_website(url: str | None) -> str | None:
     """Giữ lại URL website RIÊNG của doanh nghiệp; loại link nội bộ của Google."""
     if not url:

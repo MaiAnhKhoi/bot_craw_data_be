@@ -2,7 +2,16 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -55,7 +64,13 @@ class JobQuery(Base):
     """Một truy vấn đã mở rộng: `<từ khoá> <địa điểm>`."""
 
     __tablename__ = "job_queries"
-    __table_args__ = (UniqueConstraint("job_id", "query", name="uq_job_queries_job_query"),)
+    __table_args__ = (
+        UniqueConstraint("job_id", "query", name="uq_job_queries_job_query"),
+        # Tra "truy vấn này đã chạy xong gần đây chưa" — chạy MỘT LẦN cho MỖI truy
+        # vấn của mọi job. Job quét tới phường/xã có 3.321 truy vấn, bảng thì tích
+        # luỹ qua mọi lần chạy, nên không có chỉ mục là quét toàn bảng 3.321 lần.
+        Index("ix_job_queries_query_finished", "query", "status", "finished_at"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     job_id: Mapped[int] = mapped_column(ForeignKey("scrape_jobs.id", ondelete="CASCADE"), index=True)
@@ -67,6 +82,11 @@ class JobQuery(Base):
     gl: Mapped[str] = mapped_column(String(8), default="vn")
     status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
     results_found: Mapped[int | None] = mapped_column(Integer)
+    # Vì sao ngừng cuộn danh sách — xem `engine.models.STOP_*`.
+    # `results_found` một mình KHÔNG trả lời được câu hỏi quan trọng nhất sau mỗi
+    # lần quét: "địa bàn này đã lấy hết chưa, hay Google cắt giữa chừng?". 95 kết
+    # quả kèm 'exhausted' là xong; 95 kết quả kèm 'cut_off' là còn sót cả nghìn.
+    stop_reason: Mapped[str | None] = mapped_column(String(16))
     error: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

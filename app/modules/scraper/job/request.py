@@ -29,6 +29,14 @@ class JobCreateRequest(BaseModel):
         ),
     )
     ttl_days: int = Field(90, ge=0, le=3650, description="Bỏ qua địa điểm đã quét trong ngần này ngày")
+    skip_recent_queries: bool = Field(
+        True,
+        description=(
+            "Bỏ qua luôn cả TRUY VẤN đã chạy xong trong `ttl_days` ngày gần đây. "
+            "`ttl_days` một mình chỉ tiết kiệm ở pha chi tiết — pha tìm kiếm vẫn "
+            "cuộn lại toàn bộ danh sách để rồi nhận ra mọi địa điểm đều đã có."
+        ),
+    )
 
     @field_validator("keywords", "locations", mode="before")
     @classmethod

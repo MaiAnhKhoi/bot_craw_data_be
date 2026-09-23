@@ -1,0 +1,9 @@
+# Repo này được clone trên Windows với core.autocrlf=true, nên mọi file text mặc
+# định về đĩa với xuống dòng CRLF. Script shell CHẠY TRONG CONTAINER LINUX thì ký
+# tự CR thừa ở cuối dòng đầu làm sh chết ngay, và thông báo lỗi là "not found" —
+# không liên quan gì tới nguyên nhân thật, rất mất thời gian mới lần ra.
+#
+# Ghim eol=lf cho .sh để bản clone mới chạy được ngay. (Entrypoint của service
+# backup vẫn tự lọc CR một lần nữa: đó là lưới thứ hai cho file .sh không đi qua
+# Git, ví dụ người dùng tự tạo bằng Notepad.)
+*.sh text eol=lf

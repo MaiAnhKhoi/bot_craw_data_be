@@ -8,6 +8,9 @@ from __future__ import annotations
 import re
 from urllib.parse import unquote
 
+import phonenumbers
+from phonenumbers import NumberParseException
+
 NBSP = chr(0x00A0)
 THIN_SPACE = chr(0x2009)
 NARROW_NBSP = chr(0x202F)
@@ -47,9 +50,11 @@ _OPEN_STATE_RE = re.compile(
     r"|đóng cửa vĩnh viễn|open|closed|closes|opens|24 hours)",
     re.IGNORECASE,
 )
-# Một đoạn chỉ được coi là số điện thoại khi TOÀN BỘ đoạn trông giống số —
-# nhờ vậy số nhà trong địa chỉ không bị nhận nhầm.
-_PHONE_SEGMENT_RE = re.compile(r"^[(]?(?:\+?84|0)[\d\s.()-]{7,16}$")
+# Cửa sàng lọc RẺ: đoạn phải TOÀN là ký tự của một số điện thoại. Chặn ngay mọi
+# đoạn có chữ cái (địa chỉ, tên ngành nghề) trước khi gọi tới phonenumbers.
+# KHÔNG ghim đầu số quốc gia ở đây — bản cũ viết `(?:\+?84|0)` nên mọi số nước
+# ngoài dạng quốc tế (+66, +65, +1, +81...) đều bị loại, xem `is_phone_segment`.
+_PHONE_SHAPE_RE = re.compile(r"^[+(]?[\d][\d\s.()+-]{7,22}$")
 _RATING_ONLY_RE = re.compile(r"^\d+[.,]\d+\s*(\([\d.,\sKNM]+\))?$")
 _SPONSORED_RE = re.compile(r"(Được tài trợ|Sponsored|Quảng cáo)", re.IGNORECASE)
 
@@ -77,11 +82,24 @@ _REL_DATE_RE = re.compile(
 )
 
 
+# Vùng ký tự RIÊNG TƯ của Unicode (U+E000-U+F8FF). Google nhúng glyph của bộ
+# icon font ngay vào text của thẻ kết quả — `innerText` đọc được nó, còn trình
+# duyệt thì vẽ ra một biểu tượng. Không lọc thì nó chui thẳng vào địa chỉ và
+# hiện ra dưới dạng ô vuông, hoặc tệ hơn là một dấu phẩy cụt đầu dòng:
+# ", 201" -> ", 201" (đã gặp thật trên dữ liệu Chiang Mai).
+_PRIVATE_USE_RE = re.compile(r"[-]")
+
+
 def normalize_ws(text: str | None) -> str | None:
     if text is None:
         return None
-    cleaned = re.sub("[" + NBSP + THIN_SPACE + NARROW_NBSP + "]", " ", text)
+    cleaned = _PRIVATE_USE_RE.sub(" ", text)
+    cleaned = re.sub("[" + NBSP + THIN_SPACE + NARROW_NBSP + "]", " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    # Sau khi bỏ icon, đoạn có thể chỉ còn lại dấu phân cách mồ côi (", 201" ->
+    # ta muốn "201"). Gọt dấu phẩy/gạch ở hai đầu, nhưng KHÔNG gọt chữ số hay
+    # chữ cái — "1366" là một địa chỉ ngắn thật, không phải rác.
+    cleaned = cleaned.strip(" ,;-·")
     return cleaned or None
 
 
@@ -232,13 +250,37 @@ def split_segments(line: str) -> list[str]:
     return [p for p in (normalize_ws(x) for x in parts) if p]
 
 
-def is_phone_segment(segment: str) -> bool:
-    if not _PHONE_SEGMENT_RE.match(segment or ""):
+def is_phone_segment(segment: str, region: str = "VN") -> bool:
+    """Đoạn text này có phải số điện thoại không, xét theo VÙNG đang quét.
+
+    Trước đây việc này do một regex tự chế quyết định, và regex đó ghim cứng đầu
+    số Việt Nam (`+84` hoặc `0`). Hệ quả đo được: `+66 2 281 9715` (Bangkok),
+    `+65 6222 3333` (Singapore), `+1 718-555-1234` (New York) đều bị coi là
+    KHÔNG phải số điện thoại. Thẻ kết quả nước ngoài vì thế mất sạch SĐT, và tệ
+    hơn — ở thẻ chưa có dòng ngành nghề, đoạn SĐT rơi xuống nhánh gán
+    `category`, nên số điện thoại chui vào cột "Ngành nghề" của file xuất.
+
+    Giờ để `phonenumbers` quyết định: nó biết quy tắc của từng nước, nên vừa
+    nhận đúng số nội địa không có số 0 dẫn (Singapore, Hong Kong), vừa loại được
+    chuỗi số trong địa chỉ — "325 169-170" đủ 9 chữ số nhưng không phải số hợp lệ
+    ở bất kỳ vùng nào, trong khi luật đếm chữ số cũ thì cho qua.
+    """
+    segment = (segment or "").strip()
+    if not _PHONE_SHAPE_RE.match(segment):
         return False
-    return len(re.sub(r"\D", "", segment)) >= 9
+    try:
+        parsed = phonenumbers.parse(segment, (region or "VN").upper())
+    except NumberParseException:
+        return False
+    return phonenumbers.is_valid_number(parsed)
 
 
-def parse_card(name: str | None, lines: list[str] | None, rating_labels: list[str] | None = None) -> dict:
+def parse_card(
+    name: str | None,
+    lines: list[str] | None,
+    rating_labels: list[str] | None = None,
+    region: str = "VN",
+) -> dict:
     """Bóc thẻ kết quả trong danh sách tìm kiếm.
 
     Thẻ cho sẵn tên, SĐT, danh mục, địa chỉ rút gọn, rating, trạng thái mở cửa —
@@ -276,7 +318,7 @@ def parse_card(name: str | None, lines: list[str] | None, rating_labels: list[st
         segments = split_segments(line)
         if not segments:
             continue
-        phones = [s for s in segments if is_phone_segment(s)]
+        phones = [s for s in segments if is_phone_segment(s, region)]
         states = [s for s in segments if _OPEN_STATE_RE.search(s)]
         if phones or states:
             if phones and not out["phone_raw"]:

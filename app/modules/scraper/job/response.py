@@ -12,11 +12,19 @@ class JobQueryResponse(BaseModel):
     query: str
     status: str
     results_found: int | None
+    stop_reason: str | None      # exhausted | cut_off | cap | empty | unknown
     error: str | None
 
     @classmethod
     def of(cls, q: JobQuery) -> JobQueryResponse:
-        return cls(id=q.id, query=q.query, status=q.status, results_found=q.results_found, error=q.error)
+        return cls(
+            id=q.id,
+            query=q.query,
+            status=q.status,
+            results_found=q.results_found,
+            stop_reason=q.stop_reason,
+            error=q.error,
+        )
 
 
 class JobResponse(BaseModel):
@@ -49,6 +57,33 @@ class JobResponse(BaseModel):
             blocked_count=job.blocked_count, rate_per_min=rate_per_min,
             started_at=job.started_at, finished_at=job.finished_at, last_error=job.last_error,
             created_at=job.created_at, updated_at=job.updated_at,
+        )
+
+
+class RemainingAreaResponse(BaseModel):
+    """Một địa bàn CÒN SÓT: chuỗi truy vấn + hiện trạng của lần quét gần nhất.
+
+    Không phải một dòng `job_queries` — là kết quả gộp mọi lần chạy của cùng một
+    chuỗi truy vấn trên khắp các job. `job_id`/`job_name` vì thế là job của LẦN
+    GẦN NHẤT, dùng để mở ngược về đúng chỗ đã sinh ra con số này.
+    """
+
+    query: str
+    stop_reason: str            # cut_off | cap | unknown
+    results_found: int | None
+    finished_at: datetime | None
+    job_id: int
+    job_name: str
+
+    @classmethod
+    def of(cls, row) -> RemainingAreaResponse:  # noqa: ANN001 — Row của SQLAlchemy
+        return cls(
+            query=row.query,
+            stop_reason=row.stop_reason,
+            results_found=row.results_found,
+            finished_at=row.finished_at,
+            job_id=row.job_id,
+            job_name=row.job_name,
         )
 
 

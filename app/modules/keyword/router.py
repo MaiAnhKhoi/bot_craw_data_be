@@ -46,6 +46,50 @@ class SaveRequest(BaseModel):
     translated: list[str]
 
 
+def _countries_of(payload: LocalizeRequest) -> list[dict]:
+    """Danh sách quốc gia của một yêu cầu: suy từ đuôi các dòng địa điểm, cộng
+    thêm mã truyền thẳng (nếu có). Dùng chung cho cả `/plan` lẫn `/localize` để
+    hai nơi không bao giờ đếm ra hai con số khác nhau."""
+    from app.modules.geo import service as geo
+
+    countries = countries_of_locations(payload.locations)
+    known = {c["code"] for c in countries}
+    for code in payload.countries:
+        c = geo.load().country(code.upper())
+        if c and c["code"] not in known:
+            countries.append(c)
+            known.add(c["code"])
+    return countries
+
+
+class PlanResponse(BaseModel):
+    """Xem trước một lượt dịch, không gọi AI."""
+
+    total: int = Field(description="Tổng số quốc gia trong danh sách địa điểm")
+    home: list[str] = Field(description="Việt Nam — dùng thẳng từ khoá gốc, không cần dịch")
+    cached: list[str] = Field(description="Đã có bản dịch lưu sẵn, không tốn lượt gọi AI")
+    need: list[str] = Field(description="Thật sự cần gọi AI lần này")
+    limit: int = Field(description="Trần số quốc gia cho MỘT lượt gọi")
+    over_limit: bool = Field(description="`need` vượt `limit` -> phải bớt địa điểm đi")
+    ai_available: bool
+
+
+@router.post(
+    "/plan",
+    response_model=ApiResponse[PlanResponse],
+    summary="Xem trước lượt dịch: bao nhiêu nước cần gọi AI, có vượt trần không",
+)
+def plan(
+    payload: LocalizeRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(current_user),
+) -> ApiResponse[PlanResponse]:
+    """Rẻ và không đụng tới AI — chỉ đếm và tra bộ nhớ đệm. Nhờ vậy giao diện gọi
+    được mỗi khi người dùng sửa từ khoá/địa điểm để chặn ngay tại chỗ."""
+    result = KeywordService(db).plan(payload.keywords, _countries_of(payload))
+    return ApiResponse.ok(PlanResponse(**result))
+
+
 @router.get("/status", response_model=ApiResponse[dict], summary="AI có sẵn sàng không")
 def status(_: User = Depends(current_user)) -> ApiResponse[dict]:
     return ApiResponse.ok({"ai_available": ai.is_enabled()})
@@ -66,16 +110,7 @@ def localize(
     AI tắt, sai khoá hay quá hạn mức thì vẫn trả về từ khoá gốc kèm `warning` —
     người dùng tạo job được như thường, chỉ là không có bản địa hoá.
     """
-    from app.modules.geo import service as geo
-
-    countries = countries_of_locations(payload.locations)
-    if payload.countries:
-        known = {c["code"] for c in countries}
-        for code in payload.countries:
-            c = geo.load().country(code.upper())
-            if c and c["code"] not in known:
-                countries.append(c)
-
+    countries = _countries_of(payload)
     items, warning = KeywordService(db).localize(payload.keywords, countries)
     return ApiResponse.ok(
         LocalizeResponse(

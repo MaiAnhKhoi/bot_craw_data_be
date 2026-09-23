@@ -81,6 +81,22 @@ def wards(province: str, q: str | None = None) -> list[dict]:
     return _filter(load().wards.get(province, []), q)
 
 
+@lru_cache(maxsize=1)
+def _by_code() -> dict[str, dict]:
+    """Chỉ mục quốc gia theo mã. `GeoData.country()` quét tuyến tính 249 phần tử —
+    chấp nhận được khi gọi một lần, nhưng cột "Quốc gia" gọi nó cho MỌI dòng."""
+    return {c["code"]: c for c in load().countries}
+
+
+def country_name(code: str | None) -> str | None:
+    """Tên tiếng Việt của quốc gia. Mã lạ thì trả lại chính mã đó chứ không trả
+    rỗng — thà hiện "XX" còn hơn để ô trống không giải thích được."""
+    if not code:
+        return None
+    found = _by_code().get(code.upper())
+    return found["name"] if found else code.upper()
+
+
 def expand(
     continent: str | None = None,
     country: str | None = None,
