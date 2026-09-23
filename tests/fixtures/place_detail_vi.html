@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head><meta charset="utf-8"><title>Cửa Hàng Trái Cây ABC - Google Maps</title></head>
+<body>
+<!-- Bản rút gọn của khung chi tiết Google Maps (hl=vi), đo thật ngày 2026-09-22.
+     Chỉ giữ những thuộc tính mà EXTRACT_JS thật sự dựa vào: role, data-item-id,
+     aria-label, jsaction và bảng giờ. CỐ Ý không đặt class rút gọn của Google ở
+     những chỗ scraper không được phép phụ thuộc. -->
+<div role="main" aria-label="Cửa Hàng Trái Cây ABC">
+  <div>
+    <h1>Cửa Hàng Trái Cây ABC</h1>
+    <div>
+      <span><span aria-hidden="true">4,6</span><span role="img" aria-label="4,6 sao"></span></span>
+      <span><span aria-label="1.234 bài đánh giá" role="button">(1.234)</span></span>
+    </div>
+    <span><span aria-label="Giá: ₫₫">₫₫</span></span>
+    <button jsaction="pane.rating.category">Cửa hàng trái cây</button>
+  </div>
+  <div>
+    <button data-item-id="address" aria-label="Địa chỉ: 123 Đường Lê Lợi, Phường Bến Nghé, Quận 1, Thành phố Hồ Chí Minh">
+      <div>123 Đường Lê Lợi, Phường Bến Nghé, Quận 1, Thành phố Hồ Chí Minh</div>
+    </button>
+    <button data-item-id="oh" aria-label="Đang mở cửa · Đóng cửa vào 22:00·Xem thêm giờ">Đang mở cửa</button>
+    <div jsaction="pane.openhours" aria-expanded="false">
+      <table>
+        <tbody>
+          <tr><td><div>Thứ Hai</div></td><td aria-label="Thứ Hai, 07:00 đến 22:00"><ul><li>07:00–22:00</li></ul></td></tr>
+          <tr><td><div>Thứ Ba</div></td><td><ul><li>07:00–12:00</li><li>14:00–22:00</li></ul></td></tr>
+          <tr><td><div>Thứ Tư</div></td><td><ul><li>Đóng cửa</li></ul></td></tr>
+          <tr><td><div>Chủ Nhật (Hôm nay)</div></td><td><ul><li>Mở cửa cả ngày</li></ul></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <a data-item-id="authority" href="https://traicayabc.vn/" aria-label="Trang web: traicayabc.vn">traicayabc.vn</a>
+    <button data-item-id="phone:tel:0901234567" aria-label="Điện thoại: 090 123 4567">090 123 4567</button>
+    <button data-item-id="oloc" aria-label="Mã Plus: QPGV+6M Bến Nghé, Quận 1, Thành phố Hồ Chí Minh">QPGV+6M</button>
+  </div>
+  <div>
+    <h2>Bài đánh giá</h2>
+    <!-- BIỂU ĐỒ SAO: cũng là <table> có 2 cột và ô thứ hai CÓ CHỮ, nên chỉ mỗi luật
+         "cột đầu toàn chữ số thì bỏ" mới cứu được hours_rows khỏi đếm nhầm 3 hàng này. -->
+    <table><tbody>
+      <tr><td>5</td><td aria-label="5 sao, 900 bài đánh giá">900</td></tr>
+      <tr><td>4</td><td aria-label="4 sao, 200 bài đánh giá">200</td></tr>
+      <tr><td>1</td><td aria-label="1 sao, 34 bài đánh giá">34</td></tr>
+    </tbody></table>
+    <!-- Tuổi đánh giá hiển thị sẵn trong khung; mới nhất là "3 tháng trước" = 90 ngày. -->
+    <div>
+      <span role="img" aria-label="5 sao"></span><span>Nguyễn An</span><span>2 năm trước</span>
+      <span>Trái cây rất tươi</span>
+    </div>
+    <div>
+      <span role="img" aria-label="4 sao"></span><span>Trần Bình</span><span>3 tháng trước</span>
+      <span>Giao hàng nhanh</span>
+    </div>
+    <div>
+      <span role="img" aria-label="3 sao"></span><span>Lê Cường</span><span>một năm trước</span>
+      <span>Giá hơi cao</span>
+    </div>
+  </div>
+</div>
+</body>
+</html>

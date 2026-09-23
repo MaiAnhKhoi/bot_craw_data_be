@@ -1,0 +1,39 @@
+# =====================================================================
+# Cấu hình ruff cho bot_craw_data (lint + sắp xếp import, thay cho flake8 + isort).
+# Chạy:            ruff check .
+# Tự sửa được gì thì sửa:   ruff check . --fix
+# CI chạy đúng lệnh đầu tiên (.github/workflows/ci.yml, job `lint`).
+# =====================================================================
+
+# 120 cho dễ thở: code có nhiều chuỗi selector CSS/XPath dài và URL Google Maps, bẻ dòng
+# mấy thứ đó chỉ làm khó đọc hơn chứ không sáng sủa ra.
+line-length = 120
+
+# Khớp với Python trong image nền (mcr.microsoft.com/playwright/python:v1.63.0-noble ->
+# Python 3.12) và với CI. Khai sai thì `UP` sẽ gợi ý cú pháp mà bản đang chạy chưa có.
+target-version = "py312"
+
+# `migrations/versions` là code SINH TỰ ĐỘNG bởi alembic: import thừa, biến `down_revision`
+# không dùng, dòng dài... đều do template alembic đẻ ra. Sửa tay thì lần autogenerate sau
+# lại hỏng như cũ, nên loại hẳn khỏi tầm lint thay vì rắc `# noqa` khắp nơi.
+#
+# ⚠️ PHẢI là `extend-exclude`, KHÔNG phải `exclude`: `exclude` THAY THẾ toàn bộ danh sách
+# mặc định của ruff (.venv, .git, __pycache__, build...). Viết nhầm thành `exclude` thì ruff
+# lint luôn cả `.venv/Lib/site-packages` — thực đo: 44.919 lỗi của thư viện người khác, và
+# vì dự án này chưa phải git repo nên `respect-gitignore` cũng không cứu được.
+extend-exclude = ["migrations/versions"]
+
+[lint]
+select = [
+    "E",   # pycodestyle — lỗi định dạng (kể cả E501 dòng quá 120 ký tự)
+    "F",   # pyflakes — import thừa, biến khai mà không dùng, tên không tồn tại
+    "I",   # isort — thứ tự import; giữ nhất quán để diff không lẫn tiếng ồn sắp xếp
+    "UP",  # pyupgrade — cú pháp cũ còn sót (typing.List -> list, .format -> f-string)
+    "B",   # bugbear — bug tiềm ẩn (mutable default, except quá rộng, vòng lặp giữ biến)
+]
+ignore = [
+    # `def endpoint(db: Session = Depends(get_db))` là IDIOM CHUẨN của FastAPI: giá trị
+    # mặc định gọi hàm chính là cách FastAPI khai báo dependency. B008 cấm đúng kiểu viết
+    # đó, bật lên thì mọi endpoint trong dự án đều đỏ.
+    "B008",
+]

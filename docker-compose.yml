@@ -1,0 +1,165 @@
+# =====================================================================
+# bot_craw_data — hạ tầng DEV: PostgreSQL + migrate + API + worker cào.
+#
+# ★ MỘT LỆNH LÀ CHẠY ĐƯỢC, kể cả máy vừa clone và CHƯA có file `.env`
+# (file đó bị .gitignore chặn, không nằm trong repo):
+#
+#     docker compose up -d --build
+#
+# Mọi biến đều có giá trị mặc định an toàn cho dev ngay trong file này; `.env` chỉ để
+# GHI ĐÈ. Muốn xem cấu hình đã nội suy ra sao mà không chạy gì:  docker compose config
+#
+# Chỉ dựng hạ tầng (chạy API/worker bằng tay để debug, thấy được cửa sổ Chromium):
+#     docker compose up -d db migrate
+#
+# ★ KHÔNG CÓ REDIS, KHÔNG CÓ SERVICE BROWSER RIÊNG — cố ý:
+#   - Hàng đợi job nằm trong chính PostgreSQL (bảng jobs/job_queries). Thiết kế MỘT LUỒNG
+#     (một Chromium, một BrowserContext) thì hàng đợi ngoài chỉ thêm một thứ phải trông coi
+#     mà không giải quyết vấn đề nào — nút thắt là nhịp cào, không phải khả năng điều phối.
+#   - Chromium chạy TRONG container `worker` (image nền đã có sẵn), không tách ra
+#     selenium/standalone-chrome: hồ sơ trình duyệt phải sống cùng tiến trình cào.
+# =====================================================================
+
+# Biến môi trường dùng chung cho api / worker / migrate. Sửa một chỗ, cả ba nhận.
+x-app-env: &app-env
+  # Trong mạng compose, hostname là TÊN SERVICE chứ không phải localhost. Giá trị này GHIM
+  # CỨNG (không `${...}`): `.env` của máy dev trỏ vào localhost:5432 để chạy uvicorn tay,
+  # mà localhost bên trong container lại là chính container đó -> "connection refused".
+  BCD_DATABASE_URL: postgresql+psycopg://botcraw:botcraw@db:5432/botcraw
+
+  BCD_DEBUG: ${BCD_DEBUG:-true}
+  BCD_APP_NAME: ${BCD_APP_NAME:-bot_craw_data}
+  BCD_API_PREFIX: ${BCD_API_PREFIX:-/api/v1}
+  BCD_CORS_ORIGINS: ${BCD_CORS_ORIGINS:-http://localhost:3000}
+
+  # Secret/mật khẩu mặc định CHỈ đủ dùng cho dev. Bản production
+  # (docker-compose.prod.yml) bắt buộc khai giá trị thật, thiếu là compose dừng ngay.
+  BCD_JWT_SECRET_KEY: ${BCD_JWT_SECRET_KEY:-doi-secret-nay-truoc-khi-chay-that}
+  BCD_ADMIN_USERNAME: ${BCD_ADMIN_USERNAME:-admin}
+  BCD_ADMIN_PASSWORD: ${BCD_ADMIN_PASSWORD:-admin12345}
+
+  # ⚠️ headless BẮT BUỘC true trong container: không có X server nào cả. Đặt false thì
+  # Chromium chết ngay lúc launch ("Missing X server or $DISPLAY"). Cần NHÌN trình duyệt
+  # thao tác thì chạy worker bằng tay ngoài Docker (xem README), đừng sửa dòng này.
+  BCD_HEADLESS: ${BCD_HEADLESS:-true}
+  BCD_BROWSER_ENGINE: ${BCD_BROWSER_ENGINE:-playwright}
+  # Trỏ vào thư mục var/ đã được mount ra host — hồ sơ trình duyệt sống sót qua `down`/`up`.
+  BCD_BROWSER_PROFILE_DIR: ${BCD_BROWSER_PROFILE_DIR:-var/browser_profile}
+  BCD_EXPORT_DIR: ${BCD_EXPORT_DIR:-var/exports}
+  BCD_TIMEZONE: ${BCD_TIMEZONE:-Asia/Ho_Chi_Minh}
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: botcraw-db
+    environment:
+      POSTGRES_DB: botcraw
+      POSTGRES_USER: botcraw
+      POSTGRES_PASSWORD: botcraw
+    # Publish ra host để pgAdmin/DBeaver và `alembic` chạy tay nhìn thấy. Bản production
+    # KHÔNG có dòng này. Máy đã chạy sẵn một Postgres cổng 5432 thì đổi thành "5433:5432"
+    # (chỉ đổi số bên TRÁI) rồi sửa BCD_DATABASE_URL trong .env cho khớp.
+    ports:
+      - "${BCD_DB_PORT:-5432}:5432"
+    volumes:
+      - botcraw_pgdata:/var/lib/postgresql/data
+    # `migrate` chờ healthcheck này. Thiếu nó thì migrate chạy vào lúc Postgres mới in
+    # "database system is ready" lần thứ nhất (bước khởi tạo, chưa nhận kết nối ngoài) và
+    # chết bằng "connection refused" — hỏng ngẫu nhiên theo tốc độ máy.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U botcraw -d botcraw"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ★ ĐIỂM VÀO DUY NHẤT CỦA MIGRATION: chạy `alembic upgrade head` MỘT LẦN rồi thoát.
+  # CMD của Dockerfile cố ý KHÔNG migrate — `api` và `worker` khởi động cùng lúc từ cùng
+  # một image, hai tiến trình cùng migrate một DB thì bản thua chết bằng `DuplicateTable`
+  # rồi restart và "tự khỏi" (xem giải thích dài trong Dockerfile).
+  #
+  # `api`/`worker` chờ bằng `service_completed_successfully`, nên migration lỗi thì API
+  # KHÔNG lên — thay vì lên trước schema và trả 500 cho mọi request đầu tiên.
+  #
+  # `restart: "no"` là BẮT BUỘC: `unless-stopped` sẽ khởi động lại một job đã xong, vô hạn.
+  migrate:
+    build: .
+    container_name: botcraw-migrate
+    command: alembic upgrade head
+    restart: "no"
+    # required: false -> máy vừa clone, chưa có .env vẫn chạy được. Thiếu dòng này thì
+    # `docker compose up` báo "env file .env not found" và dừng.
+    env_file:
+      - path: .env
+        required: false
+    environment: *app-env
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build: .
+    container_name: botcraw-api
+    # Ghi rõ command thay vì dựa vào CMD: đọc file này là biết cả ba vai trò chạy gì.
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment: *app-env
+    ports:
+      - "${BCD_API_PORT:-8000}:8000"
+    volumes:
+      # API cũng cần var/: nó ĐỌC file trong var/exports để trả về cho FE tải xuống.
+      - ./var:/code/var
+    # `mem_limit` chứ không phải `deploy.resources.limits.memory`: cả hai đều được Compose
+    # v2 áp dụng, nhưng `deploy:` là cú pháp thời Swarm và phần lớn khoá con trong đó bị bỏ
+    # qua kèm cảnh báo khi chạy một máy — dễ tưởng đã giới hạn mà thật ra không.
+    # API chỉ phục vụ vài người trong văn phòng, 512m là thừa.
+    mem_limit: 512m
+    # Image nền (Ubuntu noble) CÓ sẵn curl nên không cần script healthcheck riêng.
+    # Đường dẫn khớp BCD_API_PREFIX mặc định (/api/v1) — đổi prefix thì sửa cả dòng này.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # ★ TIẾN TRÌNH CÀO — CHỈ ĐƯỢC CHẠY ĐÚNG MỘT BẢN.
+  # Một Chromium, một BrowserContext, một IP văn phòng. `docker compose up --scale worker=2`
+  # sẽ phá điều này mà không có cảnh báo nào: hai con bot cùng cào từ một IP là cách nhanh
+  # nhất để cả văn phòng ăn CAPTCHA, và hai container cùng mở một `var/browser_profile`
+  # còn làm hỏng luôn hồ sơ trình duyệt (Chromium khoá profile bằng SingletonLock).
+  # Đây là ràng buộc VẬN HÀNH, code không ép được.
+  worker:
+    build: .
+    container_name: botcraw-worker
+    command: python -m app.workers.runner
+    # Bị chặn/mất mạng/crash trang thì tự dậy lại và cào tiếp từ hàng đợi trong DB.
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment: *app-env
+    volumes:
+      # Hồ sơ trình duyệt (cookie, trạng thái consent của Google), file xuất và log nằm ở
+      # đây. KHÔNG mount thì mỗi lần `docker compose up --build` là một máy hoàn toàn lạ với
+      # Google: bấm lại consent từ đầu, và mất luôn mọi file đã xuất.
+      - ./var:/code/var
+    # ★ BẮT BUỘC. /dev/shm mặc định của Docker chỉ 64MB; Chromium dùng shared memory cho
+    # từng renderer nên sẽ chết bằng "Target closed"/"Page crashed" sau vài chục trang —
+    # ngẫu nhiên, thường đúng lúc cào bộ dữ liệu lớn nên trông như bị Google chặn.
+    shm_size: 1gb
+    # Máy văn phòng 8GB: Chromium ăn RAM theo số tab và không bao giờ tự trả lại hết.
+    # 2g đủ cho một context vài tab, và là cái van để một trang nặng bất thường không kéo
+    # sập cả máy (container bị OOM-kill rồi restart, Postgres + API vẫn sống).
+    mem_limit: 2g
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  botcraw_pgdata:

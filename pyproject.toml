@@ -1,0 +1,16 @@
+[project]
+name = "bot-craw-data-be"
+version = "0.1.0"
+description = "Quét Google Maps lấy danh sách doanh nghiệp: tên, vị trí, số điện thoại, website."
+requires-python = ">=3.12"
+
+# Danh sách thư viện thật nằm ở requirements.txt / requirements-dev.txt (Docker cài từ đó).
+# Khối này chỉ để công cụ nhận diện dự án và cấu hình pytest.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "browser: cần Chromium của Playwright nhưng chạy offline trên HTML mẫu",
+    "live: chạm Google Maps thật; chỉ chạy khi GMAPS_LIVE=1",
+    "db: cần Postgres đã migrate; tự bỏ qua khi không kết nối được",
+]

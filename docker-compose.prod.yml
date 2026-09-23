@@ -1,0 +1,129 @@
+# =====================================================================
+# bot_craw_data — cấu hình CHẠY THẬT trên máy văn phòng.
+#
+# KHÁC `docker-compose.yml` (dev) ở năm điểm, mỗi điểm là một lỗi thật nếu bê nguyên bản dev:
+#   1. `BCD_DEBUG=false`  — bật debug ở bản thật là phơi traceback + chi tiết SQL ra response
+#   2. KHÔNG publish cổng DB ra host — Postgres chỉ tồn tại trong mạng compose
+#   3. Secret/mật khẩu lấy từ biến môi trường và BẮT BUỘC phải khai, không có mặc định
+#   4. API mặc định chỉ nghe trên 127.0.0.1
+#   5. `restart: always` — máy văn phòng cắm điện chạy cả ngày, mất điện bật lại là tự lên
+#
+# Chạy:
+#   cp .env.example .env.prod        # rồi ĐIỀN GIÁ TRỊ THẬT, xem cảnh báo dưới
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+#
+# Kiểm cú pháp mà không chạy gì:
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod config -q
+#
+# ★★ BẮT BUỘC ĐỔI TRƯỚC KHI CHẠY THẬT — ba giá trị này:
+#   BCD_JWT_SECRET_KEY   sinh mới: python -c "import secrets; print(secrets.token_urlsafe(64))"
+#                        Giữ nguyên chuỗi mặc định của repo nghĩa là BẤT KỲ AI đọc được repo
+#                        cũng tự ký được token admin — dữ liệu khách hàng nằm sau token đó.
+#   BCD_ADMIN_PASSWORD   `admin12345` là mật khẩu DEMO, không phải mật khẩu.
+#   BCD_DB_PASSWORD      mật khẩu Postgres, không trùng với bất kỳ mật khẩu nào khác.
+#
+# ⚠️ Cú pháp `${BIEN:?...}` là CHỐT CHẶN: biến chưa khai thì compose DỪNG NGAY, thay vì âm
+# thầm dựng DB với mật khẩu rỗng rồi chạy tiếp như không có gì. Đừng đổi thành `${BIEN:-...}`.
+# =====================================================================
+
+x-app-env: &app-env
+  # Hostname trong mạng compose là TÊN SERVICE, không phải localhost.
+  BCD_DATABASE_URL: postgresql+psycopg://botcraw:${BCD_DB_PASSWORD:?thieu BCD_DB_PASSWORD}@db:5432/botcraw
+
+  # GHIM CỨNG "false", không đọc từ .env: production không có lý do gì để bật debug, và
+  # `${BCD_DEBUG:-false}` sẽ lặng lẽ nhận `true` nếu file .env.prod được copy từ máy dev.
+  BCD_DEBUG: "false"
+  BCD_APP_NAME: ${BCD_APP_NAME:-bot_craw_data}
+  BCD_API_PREFIX: ${BCD_API_PREFIX:-/api/v1}
+  # Tên miền/địa chỉ THẬT của frontend. KHÔNG dùng "*".
+  BCD_CORS_ORIGINS: ${BCD_CORS_ORIGINS:?thieu BCD_CORS_ORIGINS - dia chi that cua frontend}
+
+  BCD_JWT_SECRET_KEY: ${BCD_JWT_SECRET_KEY:?thieu BCD_JWT_SECRET_KEY - sinh chuoi ngau nhien moi}
+  BCD_ADMIN_USERNAME: ${BCD_ADMIN_USERNAME:-admin}
+  BCD_ADMIN_PASSWORD: ${BCD_ADMIN_PASSWORD:?thieu BCD_ADMIN_PASSWORD - khong dung admin12345}
+
+  # Trong container không có X server — xem ghi chú ở docker-compose.yml.
+  BCD_HEADLESS: "true"
+  BCD_BROWSER_ENGINE: ${BCD_BROWSER_ENGINE:-playwright}
+  BCD_BROWSER_PROFILE_DIR: ${BCD_BROWSER_PROFILE_DIR:-var/browser_profile}
+  BCD_EXPORT_DIR: ${BCD_EXPORT_DIR:-var/exports}
+  BCD_TIMEZONE: ${BCD_TIMEZONE:-Asia/Ho_Chi_Minh}
+
+# Cả ba vai trò dùng CHUNG một image. `image:` đặt tên cố định để compose build MỘT LẦN rồi
+# ba service cùng dùng lại, thay vì mỗi service một bản sao. Không đẩy lên registry: công cụ
+# nội bộ, chạy đúng một máy, build ngay tại chỗ (`--build`) là đường ngắn nhất.
+x-app-image: &app-image
+  build: .
+  image: botcraw-be:${BCD_IMAGE_TAG:-local}
+  restart: always
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: botcraw
+      POSTGRES_USER: botcraw
+      POSTGRES_PASSWORD: ${BCD_DB_PASSWORD:?thieu BCD_DB_PASSWORD}
+    volumes:
+      - botcraw_pgdata:/var/lib/postgresql/data
+    # ★ KHÔNG có `ports:` — CỐ Ý. Bản dev publish 5432 cho pgAdmin; làm thế ở đây là mở
+    # Postgres ra toàn mạng công ty (và ra Internet nếu máy này có IP public). Cần vào DB
+    # thì `docker compose exec db psql -U botcraw` hoặc SSH tunnel.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U botcraw -d botcraw"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # Chạy một lần rồi `exit 0`; `api`/`worker` chờ bằng `service_completed_successfully`.
+  # `restart: "no"` GHI ĐÈ `always` của anchor — nếu không, Docker sẽ khởi động lại một job
+  # đã hoàn thành, mãi mãi.
+  migrate:
+    <<: *app-image
+    restart: "no"
+    command: alembic upgrade head
+    environment: *app-env
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    <<: *app-image
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    environment: *app-env
+    # Mặc định CHỈ nghe loopback: frontend chạy trên cùng máy này. Cần máy khác trong văn
+    # phòng gọi tới thì đặt BCD_API_BIND=0.0.0.0 — và nhớ rằng API lúc đó phơi ra toàn mạng
+    # LAN, chỉ còn JWT che chắn. Bỏ hẳn phần "${...}:" là mở ra mọi interface, kể cả WAN.
+    ports:
+      - "${BCD_API_BIND:-127.0.0.1}:${BCD_API_PORT:-8000}:8000"
+    volumes:
+      - ./var:/code/var
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # ⚠️ ĐÚNG MỘT BẢN — xem giải thích ở docker-compose.yml (một Chromium, một IP công ty,
+  # profile bị khoá bởi SingletonLock).
+  worker:
+    <<: *app-image
+    command: python -m app.workers.runner
+    environment: *app-env
+    volumes:
+      - ./var:/code/var
+    # 64MB /dev/shm mặc định của Docker không đủ cho Chromium — xem docker-compose.yml.
+    shm_size: 1gb
+    mem_limit: 2g
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  botcraw_pgdata:

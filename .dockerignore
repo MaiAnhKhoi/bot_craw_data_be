@@ -1,0 +1,64 @@
+# =====================================================================
+# Loại khỏi build context của Docker.
+#
+# VÌ SAO FILE NÀY QUAN TRỌNG: Dockerfile dùng `COPY . .`. Không có nó thì `.env` (chứa
+# BCD_JWT_SECRET_KEY + mật khẩu admin) bị đóng gói thẳng vào image — ai lấy được image là
+# lấy được secret — kèm `.git/`, `.venv/` của Windows (mấy trăm MB .exe vô dụng trong
+# image Linux) và đặc biệt là `var/browser_profile/` với `var/exports/`: hồ sơ trình duyệt
+# phình tới hàng trăm MB sau vài ngày cào, file xuất thì là DỮ LIỆU KHÁCH HÀNG. Cả hai bị
+# nhét vào image nghĩa là mỗi lần build phải nén và gửi lại toàn bộ chỗ đó cho Docker
+# daemon — build chậm dần theo thời gian mà không ai hiểu vì sao.
+# =====================================================================
+
+# --- BÍ MẬT: tuyệt đối không đưa vào image ---
+.env
+.env.*
+!.env.example
+
+# --- Dữ liệu chạy: hồ sơ trình duyệt, file xuất, log (phình to + chứa dữ liệu thật) ---
+var/
+
+# --- Môi trường ảo của máy dev (Windows, vô dụng trong image Linux) ---
+.venv/
+venv/
+
+# --- Lịch sử git ---
+.git/
+.github/
+.gitignore
+.gitattributes
+
+# --- Cache Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# --- Test / lint (không cần khi chạy production) ---
+tests/
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+ruff.toml
+
+# --- Tài liệu (không ảnh hưởng runtime) ---
+docs/
+*.md
+!README.md
+
+# --- IDE / hệ điều hành ---
+.idea/
+.vscode/
+.claude/
+Thumbs.db
+.DS_Store
+
+# --- File cấu hình công cụ, không dùng lúc chạy ---
+docker-compose.yml
+docker-compose.prod.yml
+Dockerfile
+requirements-dev.txt
+
+# ⚠️ KHÔNG loại `migrations/`: service `migrate` chạy `alembic upgrade head` từ CHÍNH image
+# này. Thiếu thư mục đó thì migrate thoát mã 0 mà không tạo bảng nào (alembic không coi
+# "không có version nào" là lỗi), rồi API chết ở request đầu tiên vì bảng không tồn tại.

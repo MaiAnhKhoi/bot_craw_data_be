@@ -1,0 +1,74 @@
+# =====================================================================
+# bot_craw_data — thư viện CHẠY THẬT (runtime). Bản chỉ dùng khi dev/test
+# nằm ở `requirements-dev.txt`.
+#
+# Ghim ">=" phiên bản tối thiểu: chặn bản quá cũ thiếu API đang dùng, nhưng vẫn
+# cho `pip install -U` nhận bản vá lỗi. Ngoại lệ DUY NHẤT là playwright/patchright
+# (bị ghim trần) — xem giải thích ở mục Trình duyệt cuối file.
+# =====================================================================
+
+# --- Web API ---
+fastapi>=0.115            # framework REST + dependency injection (app/main.py, các router)
+uvicorn[standard]>=0.30   # ASGI server chạy API; [standard] kèm uvloop + httptools + watchfiles
+python-multipart>=0.0.9   # FastAPI KHÔNG tự đọc được form/upload nếu thiếu gói này — nhập
+                          # danh sách từ khoá bằng file sẽ trả 400 mà không nói rõ vì sao.
+                          # (app/ hiện CHƯA có endpoint upload nào; giữ sẵn cho JobCreate
+                          # nhận file keywords theo docs/API_CONTRACT.md)
+sse-starlette>=2.1        # `GET /jobs/{id}/events` phát tiến độ job bằng Server-Sent Events
+                          # (docs/API_CONTRACT.md §2) — FE theo dõi job không cần polling
+
+# --- Cơ sở dữ liệu (PostgreSQL) ---
+sqlalchemy>=2.0           # ORM kiểu mới (Mapped/mapped_column) dùng ở mọi `entity.py`
+alembic>=1.13             # migration; chạy bằng service `migrate` riêng, KHÔNG chạy trong CMD
+psycopg[binary]>=3.2      # driver PostgreSQL (URL `postgresql+psycopg://`). `[binary]` kèm
+                          # libpq dựng sẵn nên image không cần build-essential + libpq-dev
+
+# --- Cấu hình / kiểm tra dữ liệu ---
+pydantic>=2.8             # schema request/response
+pydantic-settings>=2.4    # đọc biến môi trường `BCD_*` thành Settings (app/core/config.py)
+
+# --- Xác thực (JWT + mật khẩu) ---
+pyjwt>=2.9                # ký/giải access token (app/core/security.py)
+bcrypt>=4.2               # băm mật khẩu tài khoản nội bộ; gọi thẳng API bcrypt, không qua passlib
+
+# --- Log ---
+loguru>=0.7               # log một dòng một sự kiện, ra stdout để `docker logs` đọc được
+
+# --- HTTP client ---
+httpx>=0.27               # kiểm tra website sống/chết (`website_check_*`). Cố ý KHÔNG mở trình
+                          # duyệt cho việc này: vài nghìn URL mà mỗi URL một tab thì hết RAM
+
+# --- Xuất file ---
+xlsxwriter>=3.2           # ghi .xlsx theo luồng (constant_memory), không dựng cả sổ trong RAM —
+                          # `export_max_rows` mặc định 100_000 dòng
+
+# --- Chuẩn hoá dữ liệu ---
+phonenumbers>=8.13        # chuẩn hoá SĐT về E.164 theo region (VN); cũng là khoá khử trùng lặp
+unidecode>=1.3            # bỏ dấu tiếng Việt để dựng `search_text` cho ô tìm kiếm không dấu
+                          # (app/modules/scraper/place/service.py). THIẾU GÓI NÀY THÌ CẢ `api`
+                          # LẪN `worker` CHẾT NGAY LÚC IMPORT — đã gặp thật khi chạy thử.
+
+# --- Độ bền ---
+tenacity>=9.0             # retry + backoff cho thao tác mạng chập chờn (goto, website check).
+                          # Viết tay vòng retry thì rất dễ quên jitter và trần số lần thử.
+                          # (chưa có chỗ dùng trong app/ lúc viết file này — để sẵn cho
+                          # engine/website.py thay vì mỗi người tự chế một vòng `while`)
+
+# --- Múi giờ ---
+tzdata>=2024.1            # image Linux slim và Windows KHÔNG có tz database của hệ điều hành.
+                          # Thiếu gói này thì `ZoneInfo("Asia/Ho_Chi_Minh")` (giờ nghỉ đêm
+                          # `night_rest_start/end`, dấu thời gian job) ném ZoneInfoNotFoundError
+
+# --- Trình duyệt (lõi cào) ---
+# ⚠️ GHIM TRẦN <1.64 LÀ CÓ CHỦ ĐÍCH, không phải quên nới.
+# Image nền `mcr.microsoft.com/playwright/python:v1.63.0-noble` đã nhúng sẵn bản Chromium
+# ĐÚNG với playwright 1.63 ở `/ms-playwright` (biến PLAYWRIGHT_BROWSERS_PATH). Mỗi bản
+# playwright yêu cầu một *revision* Chromium khác nhau; cài pip bản 1.64 vào image 1.63 thì
+# lúc khởi động chỉ nhận được "Executable doesn't exist at /ms-playwright/chromium-XXXX" —
+# lỗi lúc CHẠY, không phải lúc build, nên CI vẫn xanh. Nâng playwright = đổi tag image nền
+# trong Dockerfile trong CÙNG một commit.
+playwright>=1.63,<1.64
+# Bản playwright đã vá các dấu vết CDP mà Google dùng để nhận diện trình duyệt tự động
+# (`browser_engine=patchright` trong config). Cùng đánh số phiên bản với playwright nên ghim
+# cùng trần. Lưu ý: patchright tải Chromium RIÊNG — xem ghi chú trong Dockerfile.
+patchright>=1.63,<1.64

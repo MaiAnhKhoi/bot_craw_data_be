@@ -1,0 +1,126 @@
+# =====================================================================
+# bot_craw_data — CI.
+#
+# Ba job CỐ Ý KHÔNG nối bằng `needs:`: chúng chạy song song và độc lập, nên một lỗi lint
+# không che mất việc test cũng đang đỏ. Xem một lần chạy là biết hết mọi chỗ hỏng, thay vì
+# sửa một lỗi rồi mới lòi ra lỗi tiếp theo.
+#
+# Job `test` CHỈ chạy test offline: `-m "not live"` loại nhóm test chạm Google Maps thật
+# (marker `live` trong pyproject.toml). Không loại thì CI cào Google từ dải IP của GitHub —
+# vừa chắc chắn ăn CAPTCHA (test đỏ ngẫu nhiên, không phải do code), vừa là cào bằng một IP
+# mà ta không kiểm soát.
+# =====================================================================
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Push liên tiếp vào cùng một nhánh thì huỷ lần chạy cũ — runner miễn phí có hạn, và kết
+# quả của commit cũ không còn ai quan tâm.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # --- 1. Lint: nhanh nhất, chạy trước và luôn có kết quả riêng ---
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          # `cache: pip` lưu lại thư mục cache của pip giữa các lần chạy. Thiếu
+          # `cache-dependency-path` thì key cache không đổi khi requirements đổi -> CI cài
+          # bằng bản cũ trong cache và không ai hiểu vì sao lỗi không tái hiện được ở máy.
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      # Job này chỉ cần `ruff`, nhưng vẫn cài cả file dev: ruff kiểm tra import có tồn tại
+      # hay không theo cấu hình, và dùng CHUNG một danh sách thư viện với job test thì hai
+      # job không bao giờ lệch nhau.
+      - run: pip install -r requirements-dev.txt
+
+      - run: ruff check .
+
+  # --- 2. Test: cần một Postgres thật ---
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      # Một phiên bản Python thôi, nhưng khai sẵn dạng ma trận để thêm "3.13" sau này chỉ
+      # là sửa một dòng. `fail-fast: false` để khi có nhiều bản, một bản đỏ KHÔNG huỷ ngang
+      # các bản còn lại — mất luôn thông tin "lỗi này có ở mọi bản hay chỉ một bản".
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+
+    # Postgres thật chứ không phải SQLite: schema dùng JSONB và các kiểu riêng của
+    # PostgreSQL, test trên SQLite là test một cơ sở dữ liệu khác với bản chạy thật.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: botcraw
+          POSTGRES_USER: botcraw
+          POSTGRES_PASSWORD: botcraw
+        ports:
+          - 5432:5432
+        # Không có healthcheck thì job chạy pytest lúc Postgres chưa nhận kết nối và đỏ
+        # ngẫu nhiên theo tốc độ runner. `--health-*` là cờ của `docker run`, GitHub truyền
+        # thẳng xuống.
+        options: >-
+          --health-cmd "pg_isready -U botcraw -d botcraw"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      # Service container được publish ra localhost của runner, nên là localhost:5432
+      # (KHÁC trong docker compose, ở đó hostname là tên service `db`).
+      BCD_DATABASE_URL: postgresql+psycopg://botcraw:botcraw@localhost:5432/botcraw
+      BCD_JWT_SECRET_KEY: ci-khong-phai-secret-that
+      BCD_DEBUG: "true"
+      # Runner không có màn hình — mọi test chạm trình duyệt phải headless.
+      BCD_HEADLESS: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - run: pip install -r requirements-dev.txt
+
+      # Chỉ chromium, không tải cả firefox + webkit (~1GB tải thừa mỗi lần chạy).
+      # `--with-deps` cài các gói .deb hệ thống mà Chromium cần: runner ubuntu KHÔNG có
+      # sẵn chúng (khác image nền của Dockerfile, vốn đã nhúng đủ). Thiếu cờ này thì
+      # trình duyệt tải về vẫn không khởi động nổi.
+      - name: Cài Chromium cho Playwright
+        run: python -m playwright install --with-deps chromium
+
+      - name: Chạy test (bỏ nhóm `live` chạm Google thật)
+        run: pytest -q -m "not live"
+
+  # --- 3. Docker: chắc chắn image còn dựng được ---
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Chỉ BUILD, KHÔNG push: công cụ nội bộ chạy đúng một máy tại văn phòng, image được
+      # dựng ngay tại chỗ bằng `docker compose up -d --build`. Job này là chốt chặn để một
+      # PR đổi requirements.txt / đổi tag image nền không làm hỏng việc dựng máy thật —
+      # lỗi đó nếu không bắt ở đây thì chỉ lộ ra lúc đang triển khai.
+      - name: Build image
+        run: docker build -t botcraw-be:ci .

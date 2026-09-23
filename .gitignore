@@ -1,0 +1,49 @@
+# =====================================================================
+# bot_craw_data — những thứ KHÔNG bao giờ được commit.
+# =====================================================================
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# --- Môi trường ảo ---
+.venv/
+venv/
+
+# --- Cấu hình thật: chứa BCD_JWT_SECRET_KEY, mật khẩu DB, mật khẩu admin ---
+# Mọi biến thể (.env.prod, .env.local, .env.bak...) cũng chứa đúng những secret đó — liệt
+# kê từng tên là chắc chắn sẽ sót một cái vào đúng hôm vội. Hai dòng `!` giữ lại file mẫu,
+# vốn chỉ có giá trị giả.
+.env
+.env.*
+!.env.example
+
+# --- Dữ liệu chạy ---
+# `var/` giữ hồ sơ trình duyệt (cookie phiên Google — commit lên là lộ phiên đăng nhập),
+# file xuất (DỮ LIỆU KHÁCH HÀNG) và log. Toàn bộ sinh ra lúc chạy, không phải mã nguồn.
+var/
+*.log
+
+# --- Cache công cụ ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# --- IDE / hệ điều hành ---
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
+
+# --- Còn lại từ bản CLI đời đầu (gmaps_scraper): dữ liệu và danh sách từ khoá chạy tay ---
+data/
+exports/
+logs/
+config.yaml
+keywords.txt
+locations.txt

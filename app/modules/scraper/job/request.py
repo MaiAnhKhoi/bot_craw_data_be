@@ -1,0 +1,45 @@
+from __future__ import annotations
+
+from pydantic import BaseModel, Field, field_validator
+
+
+class JobCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200, description="Tên job cho dễ nhận ra")
+    keywords: list[str] = Field(min_length=1, description="Mỗi dòng một từ khoá")
+    locations: list[str] = Field(default_factory=list, description="Nhân tổ hợp với từng từ khoá")
+    hl: str = Field("vi", max_length=8, description="Ngôn ngữ giao diện Google Maps")
+    gl: str = Field("vn", max_length=8, description="Quốc gia ưu tiên khi tìm")
+    region: str = Field("VN", max_length=4, description="Vùng dùng để chuẩn hoá số điện thoại")
+    max_results_per_query: int = Field(200, ge=1, le=500)
+    detail_mode: str = Field(
+        "missing_only",
+        description=(
+            "always = luôn mở trang chi tiết; "
+            "missing_only = chỉ mở khi còn thiếu trường cần (mặc định); "
+            "never = chỉ đọc thẻ kết quả, nhanh nhất nhưng KHÔNG có website"
+        ),
+    )
+    enrich_website: bool = Field(True, description="Lấy website doanh nghiệp và kiểm tra còn sống không")
+    ttl_days: int = Field(90, ge=0, le=3650, description="Bỏ qua địa điểm đã quét trong ngần này ngày")
+
+    @field_validator("keywords", "locations", mode="before")
+    @classmethod
+    def _clean_lines(cls, v):  # noqa: ANN001, ANN206
+        if isinstance(v, str):
+            v = v.splitlines()
+        if not isinstance(v, list):
+            return v
+        out: list[str] = []
+        for item in v:
+            s = str(item).strip()
+            if s and not s.startswith("#") and s not in out:
+                out.append(s)
+        return out
+
+    @field_validator("detail_mode")
+    @classmethod
+    def _mode(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in {"always", "missing_only", "never"}:
+            raise ValueError("detail_mode phải là always | missing_only | never")
+        return v
