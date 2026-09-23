@@ -1,24 +1,20 @@
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
-from unidecode import unidecode
 
 from app.core.exceptions import NotFoundError
 from app.core.pagination import Page, PageParams
+from app.core.text import fold_text
 from app.modules.scraper.engine.liveness import LivenessInput, evaluate
 from app.modules.scraper.place.entity import PLACE_PENDING, Place
 from app.modules.scraper.place.repository import PlaceFilter, PlaceRepository
 from app.modules.scraper.place.response import PlaceResponse
 
-
-def fold_text(value: str | None) -> str:
-    """Bỏ dấu + viết thường + gom khoảng trắng, để 'quan 1' tìm ra 'Quận 1'."""
-    if not value:
-        return ""
-    return re.sub(r"\s+", " ", unidecode(value).lower()).strip()
+# `fold_text` sống ở app/core/text.py vì module geo cũng dùng chung; giữ lại tên
+# ở đây để các chỗ đang import từ service không phải sửa.
+__all__ = ["PlaceService", "build_search_text", "fold_text", "recompute_liveness"]
 
 
 def build_search_text(name: str | None, address: str | None, category: str | None = None) -> str:

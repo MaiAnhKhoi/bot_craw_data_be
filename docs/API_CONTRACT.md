@@ -207,3 +207,72 @@ type WorkerStatus = {
 | GET | `/stats/overview` | `Overview` |
 | GET | `/stats/worker` | `WorkerStatus` |
 | GET | `/health` | `{ status: "ok", version, db: "ok" }` (không cần token) |
+
+## 5. Địa giới hành chính (geo)
+
+Danh mục tĩnh phục vụ ô chọn địa điểm theo cấp. Dữ liệu nằm trong file JSON đi kèm
+backend nên không phụ thuộc dịch vụ ngoài lúc chạy.
+
+**Phạm vi dữ liệu** — nói rõ để không kỳ vọng nhầm:
+
+| Cấp | Phạm vi |
+|---|---|
+| Châu lục | 7 |
+| Quốc gia | 249, đủ toàn thế giới, tên hiển thị tiếng Việt |
+| Tỉnh/bang | ~3.500, đủ toàn thế giới (ISO 3166-2) |
+| Phường/xã | **Chỉ Việt Nam** — 3.321 đơn vị theo địa giới từ 01/07/2025 |
+
+```ts
+type GeoItem = { code: string; name: string }
+type GeoCountry = GeoItem & {
+  name_en: string
+  continent: string
+  levels: 1 | 2 | 3    // 1 = chỉ quốc gia · 2 = có cấp tỉnh · 3 = có cả phường/xã
+}
+```
+
+| Method | Path | Query | Data |
+|---|---|---|---|
+| GET | `/geo/continents` | — | `GeoItem[]` |
+| GET | `/geo/countries` | `continent?`, `q?` | `GeoCountry[]` |
+| GET | `/geo/provinces` | `country` (bắt buộc), `q?` | `GeoItem[]` |
+| GET | `/geo/wards` | `province` (bắt buộc), `q?` | `GeoItem[]` |
+| POST | `/geo/expand` | body bên dưới | `ExpandResponse` |
+
+`q` tìm không dấu cũng khớp (`ho chi` ra `Thành phố Hồ Chí Minh`).
+
+### POST /geo/expand
+
+Biến lựa chọn theo cấp thành danh sách chuỗi địa điểm cụ thể để đổ vào ô `locations`
+của job.
+
+```ts
+type ExpandRequest = {
+  continent?: string | null   // mã, hoặc "ALL", hoặc bỏ trống
+  country?: string | null
+  province?: string | null    // bỏ trống = dừng ở cấp quốc gia
+  ward?: string | null        // bỏ trống = dừng ở cấp tỉnh
+}
+type ExpandResponse = {
+  locations: string[]   // "Phường Bến Thành, Thành phố Hồ Chí Minh, Việt Nam"
+  total: number         // tổng THẬT, có thể lớn hơn số dòng trả về
+  truncated: boolean    // true khi total vượt trần 5.000 dòng
+}
+```
+
+Quy ước: `"ALL"` = **tách ra từng mục** ở cấp đó.
+
+| Lựa chọn | Kết quả |
+|---|---|
+| `{country:"VN"}` | 1 dòng — `Việt Nam` |
+| `{country:"VN", province:"ALL"}` | 34 dòng |
+| `{country:"VN", province:"VN-79", ward:"ALL"}` | 168 dòng |
+| `{country:"VN", province:"ALL", ward:"ALL"}` | 3.321 dòng |
+| `{continent:"AS", country:"ALL"}` | 54 dòng |
+
+**Châu lục chỉ là bộ lọc**, không bao giờ xuất hiện trong chuỗi địa điểm — truy vấn
+`"vựa trái cây Châu Á"` là vô nghĩa với Google Maps.
+
+Mã cụ thể không khớp thì trả rỗng chứ **không** âm thầm lùi về cấp trên. Riêng khi
+chọn `"ALL"`, quốc gia/tỉnh thiếu dữ liệu cấp dưới sẽ được giữ lại ở cấp cao hơn —
+chọn "phủ hết" mà mất nguyên một nước mới là sai.

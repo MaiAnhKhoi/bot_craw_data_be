@@ -14,6 +14,7 @@ from app.core.exceptions import register_exception_handlers
 from app.core.logging_config import setup_logging
 from app.core.request_context import RequestContextMiddleware
 from app.core.response import ApiResponse
+from app.modules.geo.router import router as geo_router
 from app.modules.identity.router import router as auth_router
 from app.modules.scraper.job.router import router as jobs_router
 from app.modules.scraper.place.router import router as places_router
@@ -107,5 +108,6 @@ api.include_router(health_router)
 api.include_router(auth_router)
 api.include_router(jobs_router)
 api.include_router(places_router)
+api.include_router(geo_router)
 api.include_router(stats_router)
 app.include_router(api)
