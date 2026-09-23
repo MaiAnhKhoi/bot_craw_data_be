@@ -125,5 +125,34 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # ★ SAO LƯU — thiếu service này là chạy thật mà KHÔNG có bản sao lưu nào, trong khi
+  # bản dev thì có. Đó là kiểu lỗ nguy hiểm nhất: người vận hành tin rằng mình đang
+  # được bảo vệ vì "đã làm backup rồi", tới lúc cần khôi phục mới biết là không.
+  # Giải thích cơ chế bù giờ (vì sao KHÔNG dùng cron) nằm ở docker-compose.yml.
+  backup:
+    # PHẢI đúng image của service `db`: pg_dump chỉ bảo đảm làm việc với server CÙNG
+    # major version, lệch version thì tới lúc pg_restore mới biết file không dùng được.
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      PGHOST: db
+      PGUSER: botcraw
+      PGPASSWORD: ${BCD_DB_PASSWORD:?thieu BCD_DB_PASSWORD}
+      PGDATABASE: botcraw
+      TZ: ${BCD_TIMEZONE:-Asia/Ho_Chi_Minh}
+      BCD_BACKUP_EVERY_HOURS: ${BCD_BACKUP_EVERY_HOURS:-24}
+      BCD_BACKUP_KEEP: ${BCD_BACKUP_KEEP:-14}
+    volumes:
+      - ./scripts:/scripts:ro
+      # Bind-mount ra host CÓ CHỦ Ý: người vận hành phải mở được thư mục này để copy
+      # sang Drive/ổ ngoài. Backup nằm cùng ổ với database chỉ chống được xoá nhầm và
+      # migration hỏng, KHÔNG chống được hỏng ổ.
+      - ./backups:/backups
+    entrypoint: ["/bin/sh", "-c", "tr -d '\r' < /scripts/backup_loop.sh > /tmp/backup_loop.sh; exec /bin/sh /tmp/backup_loop.sh"]
+    mem_limit: 256m
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   botcraw_pgdata:
