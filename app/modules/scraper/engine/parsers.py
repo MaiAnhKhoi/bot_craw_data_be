@@ -55,6 +55,15 @@ _OPEN_STATE_RE = re.compile(
 # KHÔNG ghim đầu số quốc gia ở đây — bản cũ viết `(?:\+?84|0)` nên mọi số nước
 # ngoài dạng quốc tế (+66, +65, +1, +81...) đều bị loại, xem `is_phone_segment`.
 _PHONE_SHAPE_RE = re.compile(r"^[+(]?[\d][\d\s.()+-]{7,22}$")
+# Thẻ của địa điểm CHƯA CÓ ĐÁNH GIÁ NÀO không hiện sao, mà hiện thẳng câu này.
+# Nó chiếm đúng vị trí mà bộ bóc tách coi là "danh mục", nên nếu không nhận ra
+# thì "Chưa có bài đánh giá" đi thẳng vào cột Ngành nghề — đo thật: 426/723 dòng
+# của một lần quét. Và tệ hơn: địa điểm mới mở (chưa ai đánh giá) là nhóm đáng
+# quan tâm nhất với người bán hàng, lại bị mất luôn ngành nghề thật.
+_NO_REVIEW_RE = re.compile(
+    r"^(chưa có (bài )?đánh giá|không có bài đánh giá|no reviews?|be the first to review)",
+    re.IGNORECASE,
+)
 _RATING_ONLY_RE = re.compile(r"^\d+[.,]\d+\s*(\([\d.,\sKNM]+\))?$")
 _SPONSORED_RE = re.compile(r"(Được tài trợ|Sponsored|Quảng cáo)", re.IGNORECASE)
 
@@ -318,6 +327,15 @@ def parse_card(
         segments = split_segments(line)
         if not segments:
             continue
+        # "Chưa có bài đánh giá" là THÔNG TIN ĐÁNH GIÁ, không phải ngành nghề.
+        # Bỏ đoạn đó ra khỏi danh sách rồi mới xét tiếp — phần còn lại của dòng
+        # (nếu có) vẫn là danh mục/địa chỉ thật và phải được giữ.
+        if any(_NO_REVIEW_RE.match(seg) for seg in segments):
+            if out["review_count"] is None:
+                out["review_count"] = 0
+            segments = [seg for seg in segments if not _NO_REVIEW_RE.match(seg)]
+            if not segments:
+                continue
         phones = [s for s in segments if is_phone_segment(s, region)]
         states = [s for s in segments if _OPEN_STATE_RE.search(s)]
         if phones or states:

@@ -329,3 +329,52 @@ class TestCardFromRaw:
             card = card_from_raw(raw)
             assert card is not None, key
             assert card.name == raw["name"], key
+
+
+# ---------- thẻ của địa điểm CHƯA CÓ ĐÁNH GIÁ NÀO ----------
+def test_chua_co_danh_gia_khong_bi_nham_thanh_nganh_nghe():
+    """Thẻ không có sao thì Google hiện thẳng "Chưa có bài đánh giá" vào đúng vị
+    trí mà bộ bóc tách coi là danh mục.
+
+    Đo thật trên một lần quét: 426/723 dòng có `category = "Chưa có bài đánh giá"`.
+    Tệ nhất là nhóm bị mất ngành nghề chính là địa điểm MỚI MỞ — nhóm đáng gọi
+    nhất với người bán hàng.
+    """
+    card = parse_card(
+        "Cong Ty ABC",
+        ["Cong Ty ABC", "Chưa có bài đánh giá", "Công ty xuất nhập khẩu"],
+        [],
+        "VN",
+    )
+    assert card["category"] == "Công ty xuất nhập khẩu"
+    assert card["review_count"] == 0
+
+
+def test_chua_co_danh_gia_nam_chung_dong_van_lay_duoc_phan_con_lai():
+    card = parse_card(
+        "Cong Ty XYZ",
+        ["Cong Ty XYZ", "Chưa có bài đánh giá · Công ty xuất nhập khẩu · 12 Lê Lợi"],
+        [],
+        "VN",
+    )
+    assert card["category"] == "Công ty xuất nhập khẩu"
+    assert card["address_short"] == "12 Lê Lợi"
+    assert card["review_count"] == 0
+
+
+def test_ban_tieng_anh_cung_nhan_ra():
+    card = parse_card("ABC Co", ["ABC Co", "No reviews", "Fruit wholesaler"], [], "TH")
+    assert card["category"] == "Fruit wholesaler"
+    assert card["review_count"] == 0
+
+
+def test_the_co_danh_gia_that_khong_bi_anh_huong():
+    card = parse_card(
+        "Vua trai cay",
+        ["Vua trai cay", "4,5(120)", "Cửa hàng bán buôn trái cây · 12 Lê Lợi"],
+        ["4,5 sao"],
+        "VN",
+    )
+    assert card["category"] == "Cửa hàng bán buôn trái cây"
+    assert card["rating"] == 4.5
+    assert card["review_count"] == 120
