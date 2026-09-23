@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.database import get_db
-from app.core.deps import current_user
+from app.core.deps import current_user, current_user_query_token
 from app.core.exceptions import AppError
 from app.core.pagination import Page, PageParams, page_params
 from app.core.response import ApiResponse
@@ -54,7 +54,9 @@ def export_places(
     f: PlaceFilter = Depends(place_filter),
     fmt: str = Query("xlsx", alias="format", description="xlsx | csv | json"),
     db: Session = Depends(get_db),
-    _: User = Depends(current_user),
+    # Trình duyệt tải file bằng thẻ <a download> nên không gắn được header —
+    # endpoint này chấp nhận token qua query string, xem app/core/deps.py.
+    _: User = Depends(current_user_query_token),
 ):  # noqa: ANN201
     fmt = fmt.lower()
     if fmt not in EXPORTERS:

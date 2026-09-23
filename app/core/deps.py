@@ -31,15 +31,22 @@ def current_user(
     return _user_from_token(creds.credentials, db)
 
 
-def current_user_sse(
-    token: str | None = Query(None, description="Token đăng nhập (EventSource không gắn được header)"),
+def current_user_query_token(
+    token: str | None = Query(
+        None, description="Token đăng nhập, dùng khi trình duyệt không gắn được header"
+    ),
     creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
     db: Session = Depends(get_db),
 ) -> User:
-    """Biến thể cho endpoint SSE.
+    """Biến thể nhận token qua query string.
 
-    `EventSource` của trình duyệt không cho gắn header Authorization, nên endpoint
-    luồng sự kiện chấp nhận token qua query string. Chỉ dùng cho endpoint CHỈ ĐỌC.
+    Hai chỗ buộc phải dùng: `EventSource` (SSE) và thẻ `<a download>` để tải file —
+    cả hai đều do trình duyệt tự phát request nên không gắn được header
+    Authorization.
+
+    CHỈ dùng cho endpoint GET chỉ đọc. Đánh đổi: token nằm trong URL nên có thể
+    lọt vào log của proxy; chấp nhận được với công cụ nội bộ chạy sau Cloudflare
+    Access, và vòng đời token đã ngắn.
     """
     raw = (creds.credentials if creds else None) or token
     if not raw:

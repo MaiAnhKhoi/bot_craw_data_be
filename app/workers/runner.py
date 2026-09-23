@@ -237,6 +237,9 @@ class Runner:
                 writer = PlaceWriter(db, region)
                 place = writer.next_pending_of_job(job_id)
                 if place is None:
+                    # Chốt lại bằng số đếm thật: địa điểm đã `done` từ job trước
+                    # không đi qua vòng lặp này nên bộ đếm cộng dồn sẽ thiếu.
+                    self._bump_job(job_id, done_places=writer.count_done_places_of_job(job_id))
                     return
                 place_id, url, name = place.id, place.maps_url, place.name
 

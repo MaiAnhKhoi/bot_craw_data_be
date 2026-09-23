@@ -155,7 +155,7 @@ Mã `liveness_reasons` (FE ánh xạ sang câu tiếng Việt):
 | GET | `/places` | xem bên dưới | `Page<Place>` |
 | GET | `/places/{id}` | — | `Place` |
 | POST | `/places/{id}/reverify` | — | `Place` (đặt lại `pending` để worker quét lại) |
-| GET | `/places/export` | như `/places` + `format` | file tải về |
+| GET | `/places/export` | như `/places` + `format` + `token` | file tải về |
 
 Query lọc dùng chung cho `/places` và `/places/export`:
 
@@ -172,7 +172,9 @@ sort              liveness | name | rating | review_count | scraped_at   (thêm 
 format            xlsx | csv | json        (chỉ /places/export)
 ```
 
-`/places/export` trả file trực tiếp (`Content-Disposition: attachment`).
+`/places/export` trả file trực tiếp (`Content-Disposition: attachment`). Giống endpoint SSE,
+nó nhận thêm `token` qua query string vì thẻ `<a download>` của trình duyệt không gắn
+được header `Authorization`.
 Quá 100.000 dòng trả lỗi `EXPORT_TOO_LARGE`.
 
 ## 4. Stats

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
 from app.core.database import SessionLocal, get_db
-from app.core.deps import current_user, current_user_sse
+from app.core.deps import current_user, current_user_query_token
 from app.core.pagination import Page, PageParams, page_params
 from app.core.response import ApiResponse
 from app.modules.identity.entity import User
@@ -83,7 +83,7 @@ def _progress_payload(job) -> dict:  # noqa: ANN001
 
 
 @router.get("/{job_id}/events", summary="Luồng tiến độ thời gian thực (SSE)")
-async def job_events(job_id: int, _: User = Depends(current_user_sse)):  # noqa: ANN201
+async def job_events(job_id: int, _: User = Depends(current_user_query_token)):  # noqa: ANN201
     """Đẩy tiến độ mỗi 2 giây.
 
     Mỗi vòng mở một Session ngắn rồi đóng ngay: kết nối SSE sống hàng giờ, ôm một

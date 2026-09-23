@@ -5,8 +5,13 @@
 -r requirements.txt
 
 pytest>=8.0            # bộ test; marker `live` (chạm Google Maps thật) bị CI loại bằng -m "not live"
-pytest-asyncio>=0.24   # engine cào là async (playwright.async_api) — thiếu gói này thì mọi
-                       # `async def test_*` bị pytest BỎ QUA kèm cảnh báo, test "xanh" mà không chạy
+pytest-asyncio>=0.24   # engine cào là async (playwright.async_api). Bộ test HIỆN TẠI chưa có
+                       # `async def test_*` nào, nhưng thiếu plugin này thì test async viết sau
+                       # sẽ bị pytest BỎ QUA kèm một dòng cảnh báo: "xanh" mà không hề chạy —
+                       # kiểu hỏng tệ nhất với test của lớp cào
 ruff>=0.6              # lint + sắp xếp import; cấu hình ở `ruff.toml`
-openpyxl>=3.1          # ĐỌC LẠI file .xlsx vừa xuất trong test (tests/test_export_pipeline.py).
-                       # Runtime chỉ GHI nên dùng xlsxwriter; openpyxl không lên image thật
+
+# GHI CHÚ: KHÔNG có openpyxl ở đây. Runtime chỉ GHI .xlsx (xlsxwriter), và bộ test hiện tại
+# không mở lại file xuất để đọc nội dung. Ngày nào test cần kiểm từng ô trong file .xlsx thì
+# thêm `openpyxl>=3.1` vào ĐÚNG FILE NÀY — đừng thêm vào requirements.txt, image thật không
+# cần thư viện đọc.

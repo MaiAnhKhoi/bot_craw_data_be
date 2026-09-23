@@ -124,6 +124,24 @@ def sample_job(client, auth):
     db.close()
 
 
+
+@pytest.fixture
+def throwaway_jobs():
+    """Thu gom id của job do test tự tạo rồi xoá sạch.
+
+    Không dọn thì mỗi lần chạy test lại để lại job `queued` trong DB, và worker
+    thật sẽ nhặt đúng những job rác đó lên chạy.
+    """
+    created: list[int] = []
+    yield created
+    if created:
+        db = SessionLocal()
+        db.execute(text("DELETE FROM job_queries WHERE job_id = ANY(:ids)"), {"ids": created})
+        db.execute(text("DELETE FROM job_places WHERE job_id = ANY(:ids)"), {"ids": created})
+        db.execute(text("DELETE FROM scrape_jobs WHERE id = ANY(:ids)"), {"ids": created})
+        db.commit()
+        db.close()
+
 # ---------- health & auth ----------
 def test_health_khong_can_dang_nhap(client):
     body = client.get("/api/v1/health").json()
@@ -151,7 +169,7 @@ def test_me_tra_ve_tai_khoan(client, auth):
 
 
 # ---------- jobs ----------
-def test_tao_job_nhan_to_hop_va_khu_trung_lap(client, auth):
+def test_tao_job_nhan_to_hop_va_khu_trung_lap(client, auth, throwaway_jobs):
     r = client.post(
         "/api/v1/jobs",
         headers=auth,
@@ -163,6 +181,7 @@ def test_tao_job_nhan_to_hop_va_khu_trung_lap(client, auth):
     )
     assert r.status_code == 200, r.text
     job = r.json()["data"]
+    throwaway_jobs.append(job["id"])
     assert job["total_queries"] == 4        # 2 từ khoá (đã khử trùng) x 2 địa điểm
     queries = [q["query"] for q in client.get(f"/api/v1/jobs/{job['id']}", headers=auth).json()["data"]["queries"]]
     assert queries == ["a q1", "a q3", "b q1", "b q3"]

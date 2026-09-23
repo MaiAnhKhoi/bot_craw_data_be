@@ -236,6 +236,21 @@ class PlaceWriter:
             ).scalar_one()
         )
 
+    def count_done_places_of_job(self, job_id: int) -> int:
+        """Số địa điểm của job đã ở trạng thái `done`.
+
+        Không dùng bộ đếm cộng dồn: một địa điểm có thể đã `done` từ job TRƯỚC
+        (trùng giữa hai từ khoá/hai lần chạy) nên vòng lặp pha chi tiết không hề
+        chạm tới nó. Cộng dồn sẽ cho "3/4" trong khi job đã xong 100%.
+        """
+        return int(
+            self.db.execute(
+                select(func.count(JobPlace.place_id))
+                .join(Place, Place.id == JobPlace.place_id)
+                .where(JobPlace.job_id == job_id, Place.status == PLACE_DONE)
+            ).scalar_one()
+        )
+
     def places_of_job(self, job_id: int, statuses: tuple[str, ...] = (PLACE_PENDING,)) -> list[Place]:
         return list(
             self.db.execute(
