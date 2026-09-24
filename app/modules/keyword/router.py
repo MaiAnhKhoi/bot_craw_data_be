@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core import ai
 from app.core.database import get_db
-from app.core.deps import current_user
+from app.core.deps import current_user, require_admin
 from app.core.response import ApiResponse
 from app.modules.identity.entity import User
 from app.modules.keyword.service import (
@@ -100,7 +100,7 @@ class PlanResponse(BaseModel):
 def plan(
     payload: LocalizeRequest,
     db: Session = Depends(get_db),
-    _: User = Depends(current_user),
+    _: User = Depends(require_admin),
 ) -> ApiResponse[PlanResponse]:
     """Rẻ và không đụng tới AI — chỉ đếm và tra bộ nhớ đệm. Nhờ vậy giao diện gọi
     được mỗi khi người dùng sửa từ khoá/địa điểm để chặn ngay tại chỗ."""
@@ -146,7 +146,7 @@ def list_sets(
 def save_set(
     payload: KeywordSetRequest,
     db: Session = Depends(get_db),
-    _: User = Depends(current_user),
+    _: User = Depends(require_admin),
 ) -> ApiResponse[KeywordSetResponse]:
     """Ghi đè theo TÊN, không phân biệt hoa thường.
 
@@ -165,7 +165,7 @@ def save_set(
 def delete_set(
     set_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(current_user),
+    _: User = Depends(require_admin),
 ) -> ApiResponse[dict]:
     """CHỈ xoá bộ, KHÔNG đụng tới bản dịch đã có — đó là thứ đã trả tiền để có."""
     KeywordSetService(db).delete(set_id)
@@ -185,7 +185,7 @@ def status(_: User = Depends(current_user)) -> ApiResponse[dict]:
 def localize(
     payload: LocalizeRequest,
     db: Session = Depends(get_db),
-    _: User = Depends(current_user),
+    _: User = Depends(require_admin),
 ) -> ApiResponse[LocalizeResponse]:
     """Không bao giờ trả lỗi vì AI.
 
@@ -211,7 +211,7 @@ def localize(
 def save(
     payload: SaveRequest,
     db: Session = Depends(get_db),
-    _: User = Depends(current_user),
+    _: User = Depends(require_admin),
 ) -> ApiResponse[dict]:
     """Bản người sửa được đánh dấu `edited_by_user` và KHÔNG bị AI ghi đè lần sau."""
     keywords = normalize(payload.keywords)

@@ -590,14 +590,57 @@ class PlaceWriter:
     def count_pending_anywhere(self) -> int:
         return int(
             self.db.execute(
-                select(func.count(Place.id)).where(Place.status == PLACE_PENDING)
+                select(func.count()).where(Place.status == PLACE_PENDING)
             ).scalar_one()
         )
+
+    def bo_vi_thieu_sdt(self, place: Place, job_id: int, keyword: str) -> bool:
+        """Xoá một địa điểm không có số điện thoại. Trả True nếu đã xoá.
+
+        SỐ ĐIỆN THOẠI LÀ THỨ DUY NHẤT DÙNG ĐƯỢC ở đây: không có nó thì không gọi
+        được, và một dòng không gọi được chỉ làm loãng danh sách của sale.
+
+        Gọi SAU pha chi tiết, không phải lúc đọc thẻ. Đo thật trên 203 địa điểm:
+        84 có số ngay từ thẻ, nhưng 119 chỉ lộ số sau khi mở trang chi tiết.
+        Chặn ở thẻ là vứt oan đúng 119 lead thật đó.
+
+        XOÁ chứ không chỉ ẩn, vì người dùng yêu cầu rõ "không cần ghi vào dữ
+        liệu". Không mất dấu: một dòng `place_rejects` giữ lại tên, ngành nghề,
+        truy vấn và link Maps — đủ để soi lại hoặc quét lại thủ công.
+
+        Chỉ xoá khi THẬT SỰ không có số. Địa điểm đã có số thì không bao giờ rơi
+        vào đây, nên một job sau không thể xoá mất lead của job trước.
+        """
+        if place.phone_e164:
+            return False
+        self.db.add(
+            PlaceReject(
+                job_id=job_id,
+                query=keyword[:300],
+                feature_id=(place.feature_id or "")[:64],
+                name=(place.name or "")[:300],
+                category=place.category,
+                maps_url=place.maps_url,
+                source="rule",
+                reason="Không có số điện thoại",
+            )
+        )
+        self.db.execute(
+            update(ScrapeJob)
+            .where(ScrapeJob.id == job_id)
+            .values(rejected_count=ScrapeJob.rejected_count + 1)
+        )
+        # Xoá địa điểm kéo theo `job_places` và `place_keywords` bằng cascade của
+        # khoá ngoại. Bộ đếm của job KHÔNG hỏng theo: `count_places_of_job` và
+        # `count_done_places_of_job` đếm lại từ DB mỗi lần chứ không cộng dồn.
+        self.db.delete(place)
+        self.db.commit()
+        return True
 
     def count_places_of_job(self, job_id: int) -> int:
         return int(
             self.db.execute(
-                select(func.count(JobPlace.place_id)).where(JobPlace.job_id == job_id)
+                select(func.count()).where(JobPlace.job_id == job_id)
             ).scalar_one()
         )
 
@@ -610,7 +653,7 @@ class PlaceWriter:
         """
         return int(
             self.db.execute(
-                select(func.count(JobPlace.place_id))
+                select(func.count())
                 .join(Place, Place.id == JobPlace.place_id)
                 .where(JobPlace.job_id == job_id, Place.status == PLACE_DONE)
             ).scalar_one()

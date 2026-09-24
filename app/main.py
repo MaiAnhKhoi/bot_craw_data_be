@@ -16,6 +16,7 @@ from app.core.request_context import RequestContextMiddleware
 from app.core.response import ApiResponse
 from app.modules.geo.router import router as geo_router
 from app.modules.identity.router import router as auth_router
+from app.modules.identity.user_router import router as users_router
 from app.modules.keyword.router import router as keyword_router
 from app.modules.scraper.job.router import router as jobs_router
 from app.modules.scraper.place.router import router as places_router
@@ -55,6 +56,7 @@ def _seed_admin() -> None:
         repo.add(
             User(
                 username=settings.admin_username,
+                role="admin",
                 password_hash=hash_password(settings.admin_password),
                 full_name="Quản trị",
             )
@@ -107,6 +109,7 @@ def health() -> ApiResponse[dict]:
 api = APIRouter(prefix=settings.api_prefix)
 api.include_router(health_router)
 api.include_router(auth_router)
+api.include_router(users_router)
 api.include_router(jobs_router)
 api.include_router(places_router)
 api.include_router(geo_router)

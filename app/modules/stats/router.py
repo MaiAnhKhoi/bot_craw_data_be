@@ -55,19 +55,19 @@ class WorkerStatusResponse(BaseModel):
 @router.get("/stats/overview", response_model=ApiResponse[OverviewResponse], summary="Số liệu tổng quan")
 def overview(db: Session = Depends(get_db), _: User = Depends(current_user)) -> ApiResponse[OverviewResponse]:
     by_status = dict(
-        db.execute(select(Place.status, func.count(Place.id)).group_by(Place.status)).all()
+        db.execute(select(Place.status, func.count()).group_by(Place.status)).all()
     )
     by_liveness = dict(
         db.execute(
-            select(Place.liveness_label, func.count(Place.id))
+            select(Place.liveness_label, func.count())
             .where(Place.status == PLACE_DONE)
             .group_by(Place.liveness_label)
         ).all()
     )
     completeness = {
-        "phone": int(db.execute(select(func.count(Place.id)).where(Place.phone_e164.isnot(None))).scalar_one()),
-        "website": int(db.execute(select(func.count(Place.id)).where(Place.website.isnot(None))).scalar_one()),
-        "address": int(db.execute(select(func.count(Place.id)).where(Place.address.isnot(None))).scalar_one()),
+        "phone": int(db.execute(select(func.count()).where(Place.phone_e164.isnot(None))).scalar_one()),
+        "website": int(db.execute(select(func.count()).where(Place.website.isnot(None))).scalar_one()),
+        "address": int(db.execute(select(func.count()).where(Place.address.isnot(None))).scalar_one()),
     }
 
     # ⚠️ "Ngày" ở đây phải do MỘT múi giờ duy nhất định nghĩa, và múi giờ đó là
@@ -93,7 +93,7 @@ def overview(db: Session = Depends(get_db), _: User = Depends(current_user)) -> 
     # chỉ phần gom nhóm mới đổi sang giờ VN.
     ngay_vn = func.date(func.timezone(ten_mui_gio, Place.first_seen_at))
     day_rows = db.execute(
-        select(ngay_vn, func.count(Place.id))
+        select(ngay_vn, func.count())
         .where(Place.first_seen_at >= since)
         .group_by(ngay_vn)
     ).all()
@@ -104,9 +104,9 @@ def overview(db: Session = Depends(get_db), _: User = Depends(current_user)) -> 
     ]
 
     top = db.execute(
-        select(PlaceKeyword.keyword, func.count(PlaceKeyword.place_id).label("n"))
+        select(PlaceKeyword.keyword, func.count().label("n"))
         .group_by(PlaceKeyword.keyword)
-        .order_by(func.count(PlaceKeyword.place_id).desc())
+        .order_by(func.count().desc())
         .limit(10)
     ).all()
 

@@ -25,8 +25,29 @@ SORTABLE = {
 # một lựa chọn lọc, đưa vào ô chọn chỉ khiến người dùng bấm vào rồi không hiểu.
 # GROUP BY chạy dưới Postgres (có ix_places_country_code) — bảng cỡ hàng trăm nghìn
 # dòng mà nạp ra Python đếm thì endpoint này thành chỗ nghẽn.
+# `count()` chứ KHÔNG phải `count(<cột>)` ở mọi câu đếm dưới đây.
+#
+# Nghe như chuyện cho đẹp, nhưng đo ở 100.000 dòng thì chênh 6,5 lần:
+#
+#     SELECT country_code, count(id)  GROUP BY country_code   122,9 ms  Seq Scan
+#     SELECT country_code, count(*)   GROUP BY country_code    18,9 ms  Index Only Scan
+#
+# Lý do: `count(id)` bắt Postgres phải LẤY GIÁ TRỊ cột `id`, mà `id` không nằm
+# trong `ix_places_country_code`. Không đọc được từ chỉ mục thì phải mở heap;
+# mà đã mở hết heap rồi thì planner thấy quét toàn bảng còn rẻ hơn, nên bỏ luôn
+# chỉ mục. `count(*)` chỉ đếm dòng, không cần cột nào, nên Index Only Scan với
+# `Heap Fetches: 0`.
+#
+# Hai cách cho kết quả Y HỆT vì `id` là khoá chính NOT NULL.
+#
+# MỘT ĐIỀU KIỆN dễ quên: lợi ích này cần VISIBILITY MAP, tức bảng phải được
+# VACUUM. Đo lại ngay sau khi nạp 100.000 dòng mà autovacuum chưa chạy thì
+# `count(*)` cũng Seq Scan 64 ms, y hệt `count(<cột>)`. Chỉ sau khi
+# `relallvisible` lên đủ thì planner mới đổi sang Index Only Scan. Nghĩa là
+# ngay sau một lượt quét lớn, trang Tổng quan vẫn chậm cho tới lúc autovacuum
+# bắt kịp — không phải lỗi, chỉ là đừng đo hiệu năng ở đúng thời điểm đó.
 COUNTRY_COUNTS = (
-    select(Place.country_code, func.count(Place.id))
+    select(Place.country_code, func.count())
     .where(Place.country_code.isnot(None))
     .group_by(Place.country_code)
 )
@@ -41,9 +62,9 @@ COUNTRY_COUNTS = (
 # lượt đó biến mất khỏi ô lọc mà không có dấu hiệu gì — người dùng tưởng không lọc
 # được, hoặc tệ hơn là tưởng không có dữ liệu.
 QUERY_COUNTS = (
-    select(PlaceKeyword.keyword, func.count(PlaceKeyword.place_id))
+    select(PlaceKeyword.keyword, func.count())
     .group_by(PlaceKeyword.keyword)
-    .order_by(func.count(PlaceKeyword.place_id).desc(), PlaceKeyword.keyword)
+    .order_by(func.count().desc(), PlaceKeyword.keyword)
 )
 
 
@@ -110,8 +131,19 @@ class PlaceRepository:
         if f.q:
             from app.modules.scraper.place.service import fold_text
 
-            needle = f"%{fold_text(f.q)}%"
-            stmt = stmt.where(or_(Place.search_text.ilike(needle), Place.name.ilike(f"%{f.q}%")))
+            # CHỈ so `search_text`, KHÔNG thêm `OR name ILIKE ...`.
+            #
+            # Vế `name` vừa thừa vừa đắt. Thừa vì `build_search_text` đã gộp sẵn
+            # tên vào `search_text` ở dạng bỏ dấu, mà so bản bỏ dấu thì BAO TRÙM
+            # bản có dấu — đo trên dữ liệu thật: 0 dòng khớp qua tên mà không
+            # khớp qua `search_text`.
+            #
+            # Đắt vì `name` KHÔNG có chỉ mục trigram. Một vế OR không đánh chỉ
+            # mục được là cả câu phải quét toàn bảng, nên
+            # `ix_places_search_text_trgm` (448 KB, dựng riêng cho ô tìm kiếm
+            # này) chưa được dùng lần nào — `idx_scan = 0`. Bỏ vế kia đi thì nó
+            # mới có cơ hội chạy.
+            stmt = stmt.where(Place.search_text.ilike(f"%{fold_text(f.q)}%"))
         if f.country:
             stmt = stmt.where(Place.country_code == f.country)
         if f.contact_status:
@@ -154,23 +186,79 @@ class PlaceRepository:
         return stmt
 
     def _order(self, stmt: Select, sort: str) -> Select:
+        """Sắp xếp theo ĐÚNG hình dạng của chỉ mục, nếu không chỉ mục thành vô dụng.
+
+        Postgres chỉ dùng được chỉ mục để sắp xếp khi thứ tự khai của chỉ mục
+        TRÙNG KHÍT với `ORDER BY` — kể cả hướng của khoá phụ và vị trí của NULL.
+        Lệch một chi tiết là nó quay về sắp xếp toàn bảng, im lặng, không lỗi.
+
+        Đo trên 100.000 dòng, đúng câu giao diện gọi mỗi lần mở trang Địa điểm:
+
+            liveness_score DESC NULLS LAST, id       44,9 ms   sắp toàn bảng
+            liveness_score DESC,            id DESC   0,73 ms  dùng chỉ mục
+            rating DESC NULLS LAST,         id DESC   0,24 ms  dùng chỉ mục
+            rating DESC NULLS LAST,         id       15,9 ms   sắp lại một phần
+
+        Hai chỗ phải khớp:
+
+        1. KHOÁ PHỤ `id` phải DESC. Mọi chỉ mục đều khai `(cột DESC, id DESC)`;
+           dùng `id` tăng dần là lệch ngay. Hướng của khoá phụ không ảnh hưởng
+           nghiệp vụ — nó chỉ cần xác định để hai lần tải cùng một trang ra cùng
+           thứ tự — nên chọn theo chỉ mục là lựa chọn miễn phí.
+
+        2. `NULLS LAST` CHỈ đặt cho cột CÓ THỂ NULL. `DESC` trong Postgres ngầm
+           là NULLS FIRST, nên chỉ mục `(liveness_score DESC)` không khớp với
+           `DESC NULLS LAST`. Với cột NOT NULL thì `NULLS LAST` chẳng đổi kết
+           quả gì — nó chỉ phá mất chỉ mục.
+        """
         desc = sort.startswith("-")
-        column = SORTABLE.get(sort.lstrip("-"), Place.liveness_score)
-        return stmt.order_by(column.desc().nullslast() if desc else column.asc().nullslast(), Place.id)
+        ten = sort.lstrip("-")
+        column = SORTABLE.get(ten, Place.liveness_score)
+        # Lấy tính NULL từ chính định nghĩa bảng thay vì chép tay một danh sách:
+        # đổi cột thành nullable mà quên sửa ở đây là mất chỉ mục, không báo lỗi.
+        co_the_null = Place.__table__.c[column.key].nullable
+        if desc:
+            huong = column.desc().nullslast() if co_the_null else column.desc()
+        else:
+            huong = column.asc().nullsfirst() if co_the_null else column.asc()
+        return stmt.order_by(huong, Place.id.desc())
+
+    @staticmethod
+    def _can_khu_trung(f: PlaceFilter) -> bool:
+        """Bộ lọc này có sinh ra JOIN làm nhân đôi dòng không.
+
+        `DISTINCT` CHỈ cần khi có nối bảng: lọc theo job nối `job_places`, lọc
+        theo lượt tìm nối `place_keywords` — một địa điểm nằm trong nhiều job
+        hoặc ra từ nhiều lượt tìm sẽ hiện thành nhiều dòng. Không nối thì khoá
+        chính đã bảo đảm mỗi địa điểm đúng một dòng, và `DISTINCT` lúc đó là
+        phần việc thừa mà Postgres vẫn phải làm thật.
+
+        Đo trên 100.000 dòng, đúng những câu giao diện gọi mỗi lần mở trang:
+            SELECT DISTINCT *   93 ms  ->  bỏ DISTINCT   44 ms   (nhanh 2,1 lần)
+            count(DISTINCT id)  40 ms  ->  count(*)       9 ms   (nhanh 4,5 lần)
+
+        Mở một trang gọi cả hai, nên chỉ riêng chỗ này tiết kiệm ~80 ms mỗi lượt
+        — và mỗi sale mở trang cả trăm lượt một ngày.
+        """
+        return f.job_id is not None or bool(f.keyword)
 
     def count(self, f: PlaceFilter) -> int:
-        stmt = self._apply(select(func.count(func.distinct(Place.id))), f)
-        return int(self.db.execute(stmt).scalar_one())
+        dem = func.count(func.distinct(Place.id)) if self._can_khu_trung(f) else func.count()
+        return int(self.db.execute(self._apply(select(dem), f)).scalar_one())
 
     def page(self, f: PlaceFilter, params: PageParams) -> list[Place]:
-        stmt = self._order(self._apply(select(Place).distinct(), f), f.sort)
+        stmt = self._order(self._apply(self._chon(f), f), f.sort)
         return list(self.db.execute(stmt.offset(params.offset).limit(params.size)).scalars().all())
 
     def stream(self, f: PlaceFilter, chunk: int = 1000) -> Iterator[Place]:
         """Duyệt theo lô cho việc xuất file — không nạp cả trăm nghìn dòng vào RAM."""
-        stmt = self._order(self._apply(select(Place).distinct(), f), f.sort)
+        stmt = self._order(self._apply(self._chon(f), f), f.sort)
         result = self.db.execute(stmt.execution_options(stream_results=True, yield_per=chunk))
         yield from result.scalars()
+
+    def _chon(self, f: PlaceFilter) -> Select:
+        stmt = select(Place)
+        return stmt.distinct() if self._can_khu_trung(f) else stmt
 
     def pulse(self) -> tuple[int | None, datetime | None]:
         """Hai con số đủ để biết bảng địa điểm có gì mới chưa.

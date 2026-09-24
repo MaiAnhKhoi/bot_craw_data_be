@@ -138,6 +138,18 @@ services:
     build: .
     container_name: botcraw-worker
     command: python -m app.workers.runner
+    # Bật tiến trình init (tini) để THU DỌN tiến trình con mồ côi.
+    #
+    # Python chạy ở PID 1 trong container, mà PID 1 có nghĩa vụ đặc biệt: nó phải
+    # `wait()` những tiến trình con bị mồ côi. Python không làm việc đó, nên mỗi
+    # lần Playwright đóng Chromium là còn lại vài tiến trình ZOMBIE — không ăn
+    # RAM (RSS = 0) nhưng chiếm ô trong bảng PID.
+    #
+    # Đo thật: sau MỘT lượt mở trình duyệt đã có 2 zombie đứng suốt 14 phút. Mỗi
+    # job mở lại trình duyệt một lần, nên chúng cộng dồn — một máy chủ chạy liên
+    # tục hàng tháng sẽ cạn PID, và lúc đó worker không tạo nổi tiến trình mới
+    # trong khi RAM lẫn CPU vẫn trông bình thường. Đúng kiểu hỏng khó đoán nhất.
+    init: true
     # Bị chặn/mất mạng/crash trang thì tự dậy lại và cào tiếp từ hàng đợi trong DB.
     restart: unless-stopped
     env_file:
