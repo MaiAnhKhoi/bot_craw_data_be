@@ -45,6 +45,12 @@ class ScrapeJob(Base):
     failed_places: Mapped[int] = mapped_column(Integer, default=0)
     new_places: Mapped[int] = mapped_column(Integer, default=0)
     blocked_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Số thẻ kết quả bị LOẠI NGAY LÚC GHI vì nằm ngoài danh mục ngành nghề —
+    # chúng không vào bảng `places`, nên không con số nào khác của job nhắc tới
+    # chúng. Phải hiện ra được trên giao diện: một job loại 96/174 kết quả mà im
+    # lặng thì người dùng chỉ thấy "quét xong, 78 kết quả" và không có cách nào
+    # biết bộ lọc đang siết quá tay.
+    rejected_count: Mapped[int] = mapped_column(default=0)
 
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

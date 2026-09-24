@@ -186,3 +186,48 @@ def test_khong_co_khoa_thi_coi_nhu_tat():
     settings = get_settings()
     if not settings.ai_api_key:
         assert ai.is_enabled() is False
+
+
+# ---------- chặn cụm hỏng do mô hình nhả ra ----------
+@pytest.mark.parametrize(
+    ("term", "hong"),
+    [
+        # Đo thật khi xin từ khoá tiếng Khmer cho Campuchia.
+        ("ឧmartinមាក់ផ្លែឈើ", True),
+        ("អ vendor", True),
+        # Thuần một hệ chữ thì bình thường, dù là hệ chữ nào.
+        ("Fruit wholesaler", False),
+        ("ផ្លែឈើ", False),
+        ("फल विक्रेता", False),
+        ("ผู้ค้าส่งผลไม้", False),
+        ("水果批发商", False),
+        # Tiếng Việt có dấu vẫn là chữ Latinh.
+        ("vựa trái cây", False),
+    ],
+)
+def test_bo_cum_lan_lon_chu_viet(term: str, hong: bool):
+    """Trộn chữ Latinh vào giữa một hệ chữ khác là dấu hiệu mô hình nhả cụm hỏng.
+
+    Gõ `ឧmartinមាក់ផ្លែឈើ` vào Google Maps ra con số không, và KHÔNG có lỗi nào
+    báo: job chạy xong, bảng trống, người dùng không có cách nào biết vì sao.
+    Bỏ ở đây thì tầng trên rơi về từ khoá gốc — vẫn ra kết quả, còn hơn là im lặng
+    quét một cụm vô nghĩa.
+    """
+    assert ai._lac_chu_viet(term) is hong
+
+
+def test_loc_cum_hong_don_ca_du_lieu_da_luu():
+    """Lưới chặn phải nằm ở CẢ đường đọc, không chỉ lúc nhận từ AI.
+
+    Chặn mỗi lúc nhận thì những cụm hỏng đã nằm sẵn trong bộ nhớ đệm vẫn được
+    trả ra nguyên vẹn mãi mãi — đệm không có hạn. Đo thật: bộ từ khoá Khmer lưu
+    trước khi có lưới vẫn sinh ra một job quét bằng `ឧmartinមាក់ផ្លែឈើ`.
+    """
+    from app.modules.keyword.service import loc_cum_hong
+
+    assert loc_cum_hong(["ឧmartinមាក់ផ្លែឈើ", "ដឹកជញ្ជូនផ្លែឈើ", "អ vendor", "Fruit wholesaler"]) == [
+        "ដឹកជញ្ជូនផ្លែឈើ",
+        "Fruit wholesaler",
+    ]
+    assert loc_cum_hong([]) == []
+    assert loc_cum_hong(None) == []

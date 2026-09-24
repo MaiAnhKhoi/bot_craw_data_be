@@ -18,6 +18,7 @@ from app.modules.scraper.job.request import JobCreateRequest, RemainingSplitRequ
 from app.modules.scraper.job.response import (
     JobDetailResponse,
     JobResponse,
+    PlaceRejectResponse,
     RemainingAreaResponse,
     SplitPlanResponse,
 )
@@ -158,6 +159,26 @@ def _doc_tien_do(job_id: int) -> dict | None:
         return _progress_payload(job) if job is not None else None
     finally:
         db.close()
+
+
+@router.get(
+    "/{job_id}/rejects",
+    response_model=ApiResponse[Page[PlaceRejectResponse]],
+    summary="Các thẻ đã bị loại vì ngoài danh mục ngành nghề",
+)
+def list_job_rejects(
+    job_id: int,
+    params: PageParams = Depends(page_params),
+    db: Session = Depends(get_db),
+    _: User = Depends(current_user),
+) -> ApiResponse[Page[PlaceRejectResponse]]:
+    """Đối trọng của `rejected_count`: con số nói bao nhiêu, màn này nói CÁI GÌ.
+
+    Có nó thì người dùng mới trả lời được câu "bộ lọc có đang siết quá tay không"
+    bằng cách nhìn, thay vì đoán. Danh mục ngành nghề do AI sinh rồi người sửa
+    tay — thiếu một nhãn là mất cả một loại doanh nghiệp thật.
+    """
+    return ApiResponse.ok(JobService(db).rejects(job_id, params))
 
 
 @router.get("/{job_id}/events", summary="Luồng tiến độ thời gian thực (SSE)")

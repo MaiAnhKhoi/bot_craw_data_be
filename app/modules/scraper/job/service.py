@@ -23,6 +23,7 @@ from app.modules.scraper.job.request import JobCreateRequest, RemainingSplitRequ
 from app.modules.scraper.job.response import (
     JobDetailResponse,
     JobResponse,
+    PlaceRejectResponse,
     RemainingAreaResponse,
     SplitPlanItemResponse,
     SplitPlanResponse,
@@ -107,12 +108,14 @@ class JobService:
         )
         if not queries:
             raise AppError("Cần ít nhất một từ khoá hợp lệ", code="VALIDATION_ERROR", status_code=422)
+        params = payload.model_dump()
+        params["category_map"] = self._danh_muc(payload, queries)
         job = self.repo.add(
             ScrapeJob(
                 name=payload.name,
                 status=JOB_QUEUED,
                 phase="idle",
-                params=payload.model_dump(),
+                params=params,
                 total_queries=len(queries),
             )
         )
@@ -121,11 +124,62 @@ class JobService:
         self.db.refresh(job)
         return JobResponse.of(job, rate_per_min(job))
 
+    def _danh_muc(
+        self, payload: JobCreateRequest, queries: list[ExpandedQuery]
+    ) -> dict[str, list[str]]:
+        """Danh mục ngành nghề được phép giữ, theo từng quốc gia của job.
+
+        CHỐT MỘT LẦN LÚC TẠO JOB, không tra lại lúc chạy. Job chạy hàng giờ; nếu
+        worker tra bảng dịch mỗi lần ghi thì người dùng sửa danh mục giữa chừng
+        sẽ khiến nửa đầu job và nửa sau job lọc theo hai luật khác nhau — và
+        không có gì trong dữ liệu nói ra điều đó.
+
+        Giao diện gửi lên được thì ưu tiên (đó là bản người dùng vừa nhìn thấy và
+        sửa tay). Thiếu thì tra từ bản dịch đã lưu của chính bộ từ khoá này —
+        cần thiết vì tạo job từ "bộ từ khoá đã lưu" thì giao diện không hề mở màn
+        dịch nên chẳng có gì để gửi. Vẫn không có thì để trống, nghĩa là KHÔNG lọc
+        quốc gia đó; thà giữ cả rác còn hơn lấy một danh mục bịa ra mà vứt lead.
+        """
+        ra = {
+            ma.upper(): list(ds)
+            for ma, ds in (payload.category_map or {}).items()
+            if ma and ds
+        }
+        thieu = [q.gl.upper() for q in queries if q.gl and q.gl.upper() not in ra]
+        if thieu:
+            from app.modules.keyword.service import HOME_COUNTRY, KeywordService
+
+            ra.update(KeywordService(self.db).categories_of(payload.keywords, thieu))
+            # Việt Nam không bao giờ đi qua AI nên không có dòng nào trong bảng
+            # dịch — nếu dừng ở đây thì sân nhà là nơi DUY NHẤT không được lọc.
+            #
+            # Lấy chính từ khoá làm danh mục CHỈ ở đây, không làm cho nước ngoài:
+            # ở Việt Nam từ khoá và nhãn ngành nghề cùng một thứ tiếng nên chúng
+            # khớp nhau ("vựa trái cây" ↔ "Cửa hàng bán buôn trái cây"), đo trên
+            # 10 địa điểm thật ở Bến Thành thì đúng 10/10. Làm vậy với Ấn Độ là
+            # sai ngay: từ khoá tiếng Hindi không có chữ nào chung với nhãn
+            # "Fruit and vegetable store", đo được 15 cửa hàng trái cây thật bị
+            # vứt oan.
+            if HOME_COUNTRY in thieu and HOME_COUNTRY not in ra and payload.keywords:
+                ra[HOME_COUNTRY] = list(payload.keywords)
+        return ra
+
     def get(self, job_id: int) -> JobDetailResponse:
         job = self.repo.by_id(job_id, with_queries=True)
         if job is None:
             raise NotFoundError(f"Không tìm thấy job {job_id}")
         return JobDetailResponse.of_detail(job, rate_per_min(job))
+
+    def rejects(self, job_id: int, params: PageParams) -> Page[PlaceRejectResponse]:
+        """Ném 404 nếu job không tồn tại thay vì trả trang rỗng.
+
+        Trang rỗng cho một job_id sai trông y hệt "bộ lọc không loại gì cả" —
+        đúng cái kết luận nguy hiểm nhất mà màn này sinh ra để bác bỏ.
+        """
+        if self.repo.by_id(job_id) is None:
+            raise NotFoundError(f"Không tìm thấy job {job_id}")
+        rows, total = self.repo.list_rejects(job_id, params)
+        return Page.build([PlaceRejectResponse.of(r) for r in rows], params, total)
 
     def list(self, params: PageParams, status: str | None) -> Page[JobResponse]:
         rows, total = self.repo.list(params, status)

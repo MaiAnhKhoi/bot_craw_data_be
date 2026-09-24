@@ -55,6 +55,21 @@ def countries_of_locations(locations: list[str]) -> list[dict]:
     return list(seen.values())
 
 
+def loc_cum_hong(values: list[str] | None) -> list[str]:
+    """Bỏ những cụm trộn chữ Latinh vào giữa một hệ chữ khác.
+
+    Áp dụng ở ĐƯỜNG ĐỌC chứ không chỉ lúc nhận từ AI. Lưới chặn ở `app.core.ai`
+    chỉ lọc được thứ sinh ra TỪ BÂY GIỜ; những cụm hỏng đã nằm sẵn trong bộ nhớ
+    đệm thì lần sau vẫn được trả về nguyên vẹn — và vì đệm không bao giờ hết hạn,
+    chúng sẽ ở đó vĩnh viễn.
+
+    Đo thật: bộ từ khoá tiếng Khmer cho Campuchia lưu `ឧmartinមាក់ផ្លែឈើ` (có
+    nguyên chữ "martin" nằm giữa) và `អ vendor`. Gõ vào Google Maps ra con số
+    không, không báo lỗi gì — job chạy xong, bảng trống.
+    """
+    return [v for v in (values or []) if not ai._lac_chu_viet(v)]
+
+
 class KeywordService:
     def __init__(self, db: Session) -> None:
         self.db = db
@@ -90,8 +105,13 @@ class KeywordService:
         home = [c["code"] for c in countries if c["code"] == HOME_COUNTRY]
         foreign = [c for c in countries if c["code"] != HOME_COUNTRY]
         da_co = self._cached(source_hash(keywords), [c["code"] for c in foreign])
-        cached = [c["code"] for c in foreign if c["code"] in da_co]
-        need = [c["code"] for c in foreign if c["code"] not in da_co]
+        # `du_dung` chứ không phải `có mặt`: một dòng đệm có từ khoá nhưng RỖNG
+        # danh mục ngành nghề là dòng sinh ra trước khi có bộ lọc ngành. Tính nó
+        # là "đã có" thì job chạy mà không lọc gì — đúng cái lỗi mà người dùng
+        # vừa báo (tiệm bánh kem lẫn vào công ty trái cây), và lần này nó im lặng.
+        du_dung = {ma for ma, row in da_co.items() if loc_cum_hong(row.categories)}
+        cached = [c["code"] for c in foreign if c["code"] in du_dung]
+        need = [c["code"] for c in foreign if c["code"] not in du_dung]
         return {
             "total": len(countries),
             "home": home,
@@ -127,14 +147,22 @@ class KeywordService:
         missing: list[dict] = []
         for c in need:
             row = cached.get(c["code"])
-            if row:
+            tu_khoa = loc_cum_hong(list(row.keywords or [])) if row else []
+            danh_muc = loc_cum_hong(list(row.categories or [])) if row else []
+            # Lọc xong mà RỖNG thì coi như chưa có — gọi AI sinh lại bằng
+            # prompt mới thay vì đưa người dùng một danh sách trống rỗng.
+            if row and tu_khoa and danh_muc:
                 out.append(
                     {
-                        **self._row(c, list(row.keywords or []), row.language),
+                        **self._row(c, tu_khoa, row.language, danh_muc),
                         "source": "user" if row.edited_by_user else "cache",
                     }
                 )
             else:
+                # Có từ khoá nhưng CHƯA có danh mục ngành nghề -> vẫn phải gọi AI.
+                # Đây là mọi bản dịch sinh ra trước khi có bộ lọc ngành. Bỏ qua
+                # chúng thì bộ lọc tắt lặng lẽ cho đúng những quốc gia đã quét
+                # nhiều nhất, tức là chỗ có nhiều rác nhất.
                 missing.append(c)
 
         warning: str | None = None
@@ -167,6 +195,7 @@ class KeywordService:
             return [{**self._row(c, keywords, "vi"), "source": "fallback"} for c in missing]
 
         by_code = {s.country_code: s for s in suggestions}
+        da_co = self._cached(digest, [c["code"] for c in missing])
         model = get_settings().ai_model
         out: list[dict] = []
         for c in missing:
@@ -175,8 +204,33 @@ class KeywordService:
                 # AI bỏ sót quốc gia này -> giữ từ khoá gốc thay vì bịa.
                 out.append({**self._row(c, keywords, "vi"), "source": "fallback"})
                 continue
-            self.save(digest, keywords, c["code"], s.language, s.keywords, model, edited=False)
-            out.append({**self._row(c, s.keywords, s.language), "source": "ai"})
+            # Dòng người dùng đã sửa tay thì CHỈ bổ sung danh mục, giữ nguyên từ
+            # khoá và cờ `edited_by_user`. Lượt gọi này thường là để vá danh mục
+            # cho bản dịch cũ; ghi đè luôn từ khoá là xoá mất công sửa của họ mà
+            # không hỏi, và họ chỉ phát hiện khi job chạy ra kết quả lạ.
+            cu = da_co.get(c["code"])
+            giu_tu_khoa = bool(cu and cu.edited_by_user)
+            self.save(
+                digest,
+                keywords,
+                c["code"],
+                cu.language if giu_tu_khoa else s.language,
+                list(cu.keywords or []) if giu_tu_khoa else s.keywords,
+                model,
+                edited=giu_tu_khoa,
+                categories=s.categories,
+            )
+            out.append(
+                {
+                    **self._row(
+                        c,
+                        list(cu.keywords or []) if giu_tu_khoa else s.keywords,
+                        cu.language if giu_tu_khoa else s.language,
+                        s.categories,
+                    ),
+                    "source": "user" if giu_tu_khoa else "ai",
+                }
+            )
         self.db.commit()
         return out
 
@@ -189,6 +243,7 @@ class KeywordService:
         translated: list[str],
         model: str | None,
         edited: bool,
+        categories: list[str] | None = None,
     ) -> None:
         row = self.db.execute(
             select(KeywordTranslation).where(
@@ -204,16 +259,41 @@ class KeywordService:
         row.keywords = translated
         row.model = model
         row.edited_by_user = edited
+        # `None` = lần ghi này không nói gì về danh mục -> giữ nguyên cái đang có.
+        # Phân biệt với `[]` (người dùng cố ý xoá sạch) là cần thiết: nếu không,
+        # mọi lần lưu từ màn sửa từ khoá cũ sẽ âm thầm xoá mất danh mục, và bộ
+        # lọc ngành nghề tắt đi mà không ai thấy.
+        if categories is not None:
+            row.categories = list(categories)
         self.db.flush()
 
     @staticmethod
-    def _row(country: dict, keywords: list[str], language: str) -> dict:
+    def _row(
+        country: dict, keywords: list[str], language: str, categories: list[str] | None = None
+    ) -> dict:
         return {
             "country_code": country["code"],
             "country_name": country["name"],
             "language": language,
             "keywords": list(keywords),
+            "categories": list(categories or []),
         }
+
+    def categories_of(self, keywords: list[str], codes: list[str]) -> dict[str, list[str]]:
+        """Danh mục ngành nghề đã lưu, theo từng quốc gia.
+
+        Tra ở tầng service chứ không bắt giao diện gửi lên: người dùng có thể tạo
+        job từ một bộ từ khoá đã lưu mà không mở lại màn dịch lần nào, và khi đó
+        giao diện không có gì trong tay để gửi. Thiếu danh mục thì bộ lọc ngành
+        nghề tắt hẳn — quét ra bao nhiêu ghi bấy nhiêu — nên chỗ này im lặng trả
+        về rỗng là mất luôn tác dụng lọc mà không ai biết.
+        """
+        codes = [c.upper() for c in codes if c]
+        if not keywords or not codes:
+            return {}
+        da_co = self._cached(source_hash(normalize(keywords)), codes)
+        ra = {ma: loc_cum_hong(list(row.categories or [])) for ma, row in da_co.items()}
+        return {ma: ds for ma, ds in ra.items() if ds}
 
 
 def ten_chuan(name: str) -> str:

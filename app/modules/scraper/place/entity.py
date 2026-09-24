@@ -120,6 +120,43 @@ class Place(Base):
     liveness_label: Mapped[str] = mapped_column(String(8), default="ACTIVE")
     liveness_reasons: Mapped[list] = mapped_column(JSONB, default=list)
 
+    # --- đúng ngành nghề hay không ---
+    # 'match' đúng ngành · 'weak' chưa chứng minh được liên quan · NULL chưa đủ
+    # căn cứ để chấm (job không có danh mục ngành nghề, hoặc Google chưa gắn nhãn
+    # `category` cho địa điểm này).
+    #
+    # Vì sao cần: Google Maps hết kết quả khớp thật thì ĐỘN THÊM thứ loãng dần
+    # cho đủ dài. Job "Công ty trái cây" ở quần đảo Andaman, truy vấn
+    # `produce supplier` ra 118 kết quả thì 51% lạc đề — tiệm bánh kem, hiệu
+    # sách, cửa hàng quần áo, đại lý du lịch. Độ đúng ngành tụt từ 90% ở vị trí
+    # 1–20 xuống 11% ở vị trí 101–118.
+    #
+    # NULL KHÔNG BAO GIỜ bị ẩn khỏi bảng. "Chưa chấm được" khác hẳn "đã chấm và
+    # thấy lạc đề": gộp hai thứ đó làm một là đem toàn bộ dữ liệu quét trước khi
+    # có bộ lọc đi giấu, mà người dùng không có cách nào biết.
+    relevance: Mapped[str | None] = mapped_column(String(8), index=True)
+    # AI hay LUẬT CỨNG đã chấm dòng này: 'rule' | 'ai' | NULL (chưa chấm).
+    #
+    # Hai thứ đó KHÔNG cùng độ tin cậy nên không được lẫn vào nhau. Luật cứng chỉ so
+    # nhãn ngành của Google với danh mục cho phép: sai kiểu máy móc, đoán trước được.
+    # AI thì nhìn cả tên + nhãn + địa chỉ rồi tự phán, nên nó gỡ được đúng mấy ca luật
+    # cứng bó tay (`Battambang Agro Industry Co., Ltd.` bị Google gắn nhãn `Company` nên
+    # luật loại oan; 6 dòng `General store` ở Andaman cùng cảnh) — đổi lại nó có thể
+    # sai theo kiểu không lường trước.
+    #
+    # Vì thế khi bộ lọc chấm sai, đây là cột NHÌN VÀO ĐẦU TIÊN: 'rule' thì đi sửa danh
+    # mục ngành nghề, 'ai' thì đi sửa prompt. Không có cột này thì hai việc đó không
+    # phân biệt được, và người sửa chỉ còn cách đoán.
+    relevance_source: Mapped[str | None] = mapped_column(String(8))
+    # Lời giải thích ngắn của AI cho quyết định trên — CHỈ có khi `relevance_source`
+    # là 'ai'. Luật cứng không sinh ra lý do nào đáng ghi: căn cứ của nó đã nằm sẵn ở
+    # `category` + danh mục của job, đọc hai thứ đó là dựng lại được.
+    #
+    # Một chữ 'weak' trơ trọi không cãi lại được. Kèm được câu "tên là hiệu sách, nhãn
+    # `Book store`, không liên quan trái cây" thì người dùng mới phán nổi là AI đúng
+    # hay AI siết quá tay.
+    relevance_reason: Mapped[str | None] = mapped_column(String(300))
+
     # --- vị trí địa lý ---
     lat: Mapped[float | None] = mapped_column(Float)
     lng: Mapped[float | None] = mapped_column(Float)

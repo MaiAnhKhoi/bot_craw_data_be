@@ -69,6 +69,20 @@ class Settings(BaseSettings):
     ai_max_keywords: int = 4
     ai_max_countries: int = 40      # trần số quốc gia cho một lần gọi
 
+    # --- tầng AI chấm lại những ca ranh giới lúc quét ---
+    #
+    # Đây là NGOẠI LỆ DUY NHẤT của luật "worker không bao giờ gọi AI". Luật đó
+    # có để một lần AI hỏng không làm chết job đang chạy — ngoại lệ này giữ đúng
+    # tinh thần ấy: AI hỏng thì thẻ ranh giới được GIỮ LẠI kèm dấu nghi ngờ, job
+    # chạy tiếp như không có gì. Không có đường nào để AI làm hỏng một lượt quét.
+    ai_judge_enabled: bool = True
+    # Trần số thẻ đưa cho AI trong MỘT truy vấn. Google trả tối đa ~120 thẻ mỗi
+    # truy vấn và phần ranh giới đo được chỉ khoảng 10–20%, nên 60 là rất rộng —
+    # nó ở đây làm cầu chì cho trường hợp danh mục ngành nghề bị khai sai khiến
+    # gần như mọi thẻ rơi vào ranh giới. Vượt trần thì phần dư giữ lại kèm dấu
+    # nghi ngờ, không phải vứt đi.
+    ai_judge_max_per_query: int = 60
+
     # --- xuất file ---
     export_dir: str = "var/exports"
     export_max_rows: int = 100_000

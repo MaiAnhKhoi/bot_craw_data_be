@@ -385,3 +385,69 @@ def test_hai_ve_cung_di_theo_mot_cau_hinh_duy_nhat(monkeypatch):
     assert mui_gio_la in cau_gom_theo_ngay(db).params.values()   # vế SQL
     assert data.last_14_days[-1].date == str(hom_nay_la)         # vế Python
     assert data.today_new == 7
+
+
+# ---------- chọn cột khi xuất file ----------
+def test_chon_cot_giu_dung_thu_tu_chuan():
+    """Thứ tự cột trong file KHÔNG theo thứ tự người dùng gửi lên.
+
+    Bốn cột nghiệp vụ đứng đầu là quyết định có chủ đích (tên, vị trí, SĐT,
+    website — thứ sale cần trước). Và một file xuất mỗi lần một thứ tự cột thì
+    không ai dựng được công thức Excel trên đó.
+    """
+    from app.modules.scraper.place.export import chon_cot
+
+    cols = chon_cot(["website", "name", "phone"])
+    assert [c[0] for c in cols] == ["name", "phone", "website"]
+
+
+def test_chon_cot_rong_hoac_toan_khoa_la_thi_xuat_du():
+    """Thà xuất thừa còn hơn giao cho sale một file trống trơn.
+
+    Giao diện có thể gửi nhầm tên cột của BẢNG (hai tập cột khác nhau), và một
+    lỗi ánh xạ không được phép biến thành một file rỗng mà không ai báo.
+    """
+    from app.modules.scraper.place.export import COLUMNS, chon_cot
+
+    assert len(chon_cot(None)) == len(COLUMNS)
+    assert len(chon_cot([])) == len(COLUMNS)
+    assert len(chon_cot(["khong_ton_tai", "  "])) == len(COLUMNS)
+
+
+def test_khoa_cot_khong_duoc_doi():
+    """Khoá là hợp đồng với giao diện và với mọi liên kết tải file đã lưu.
+
+    Đổi một khoá thì liên kết cũ vẫn chạy nhưng IM LẶNG thiếu đúng cột đó —
+    không lỗi, không cảnh báo, chỉ là một cột biến mất khỏi file.
+    """
+    from app.modules.scraper.place.export import KHOA_COT
+
+    assert KHOA_COT == (
+        "name", "location", "address_full", "country", "country_source", "phone",
+        "website", "liveness", "contact", "contact_note", "liveness_score",
+        "liveness_reasons", "category", "rating", "review_count",
+        "latest_review_days", "website_status", "phone_e164", "lat", "lng",
+        "keywords", "maps_url", "scraped_at",
+    )
+
+
+def test_xuat_csv_theo_cot_da_chon(tmp_path):
+    from app.modules.scraper.place.export import chon_cot, export_csv
+
+    class P:
+        id = 1
+        name = "Công ty ABC"
+        address = "12 Lê Lợi"
+        address_short = None
+        phone_e164 = "+84901234567"
+        phone_national = "0901234567"
+        phone_raw = "0901234567"
+        website = "https://abc.vn"
+
+    path = export_csv([P()], {1: ["vựa trái cây"]}, tmp_path / "t.csv",
+                      chon_cot(["name", "phone", "website"]))
+    dong = path.read_text(encoding="utf-8-sig").splitlines()
+    assert dong[0] == "Tên công ty,Số điện thoại,Website"
+    assert dong[1] == "Công ty ABC,+84 901 234 567,https://abc.vn"
+    # Đúng 3 cột, không dư cột rỗng nào ở cuối.
+    assert dong[1].count(",") == 2

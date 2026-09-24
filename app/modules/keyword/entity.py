@@ -26,6 +26,15 @@ class KeywordTranslation(Base):
     country_code: Mapped[str] = mapped_column(String(4), index=True)
     language: Mapped[str] = mapped_column(String(8), default="en")
     keywords: Mapped[list] = mapped_column(JSONB, default=list)
+    # Tên NGÀNH NGHỀ mà Google Maps thật sự dùng ở đúng nước đó ("Fruit and
+    # vegetable wholesaler", "फल विक्रेता"...). AI sinh nó CÙNG MỘT LƯỢT với
+    # `keywords`, nhưng dùng cho việc NGƯỢC LẠI:
+    #   keywords   -> đem đi TÌM, quyết định gõ gì vào ô tìm kiếm
+    #   categories -> đem đi LỌC, quyết định giữ hay bỏ thứ tìm được
+    # Nằm chung một dòng vì hai thứ luôn ra đời cùng một lần gọi AI và cùng phụ
+    # thuộc `source_hash`: tách bảng riêng thì có ngày một bên trúng đệm còn bên
+    # kia không, và job sẽ lọc bằng danh mục của một bộ từ khoá khác.
+    categories: Mapped[list] = mapped_column(JSONB, default=list)
     model: Mapped[str | None] = mapped_column(String(64))
     edited_by_user: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
