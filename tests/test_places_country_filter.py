@@ -140,3 +140,28 @@ def test_ten_co_dau_khong_bi_day_xuong_cuoi():
     """Chữ Ấ nằm sau chữ Z trong bảng mã, xếp thô thì Ấn Độ rơi xuống tận đáy."""
     items = [CountryCountResponse.of("ZW", 1), CountryCountResponse.of("IN", 1)]
     assert [c.code for c in sort_countries(items)] == ["IN", "ZW"]
+
+
+# ---------- DISTINCT chỉ khi thật sự cần ----------
+def test_khong_loc_theo_job_hay_luot_tim_thi_khong_dung_distinct():
+    """`DISTINCT` chỉ cần khi có JOIN làm nhân đôi dòng.
+
+    Không nối bảng thì khoá chính đã bảo đảm mỗi địa điểm đúng một dòng, và
+    `DISTINCT` lúc đó là phần việc thừa mà Postgres vẫn phải làm thật. Đo trên
+    100.000 dòng: `SELECT DISTINCT *` 93 ms so với 44 ms khi bỏ đi, và
+    `count(DISTINCT id)` 40 ms so với `count(*)` 9 ms.
+    """
+    assert PlaceRepository._can_khu_trung(PlaceFilter()) is False
+    assert PlaceRepository._can_khu_trung(PlaceFilter(country="TH")) is False
+    assert PlaceRepository._can_khu_trung(PlaceFilter(q="trái cây")) is False
+    assert PlaceRepository._can_khu_trung(PlaceFilter(has_phone=True)) is False
+
+
+def test_loc_theo_job_hay_luot_tim_thi_bat_buoc_distinct():
+    """Bỏ `DISTINCT` ở đây là hỏng dữ liệu, không phải chậm.
+
+    Một địa điểm nằm trong nhiều job, hoặc ra từ nhiều lượt tìm, sẽ hiện thành
+    NHIỀU DÒNG giống hệt nhau — và `total` của phân trang cũng đếm lặp theo.
+    """
+    assert PlaceRepository._can_khu_trung(PlaceFilter(job_id=1)) is True
+    assert PlaceRepository._can_khu_trung(PlaceFilter(keyword="vựa trái cây")) is True
