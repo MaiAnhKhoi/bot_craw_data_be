@@ -458,7 +458,8 @@ def test_khong_co_sdt_thi_bi_xoa_va_de_lai_vet(job_trong):
     Nhưng không được mất dấu: một dòng `place_rejects` giữ tên, ngành nghề,
     truy vấn và link Maps, đủ để soi lại hoặc quét tay.
     """
-    from sqlalchemy import func, select as sel
+    from sqlalchemy import func
+    from sqlalchemy import select as sel
 
     db, job = job_trong
     writer = PlaceWriter(db, "IN")
