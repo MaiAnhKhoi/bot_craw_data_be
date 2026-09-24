@@ -1,0 +1,47 @@
+# =====================================================================
+# Mở giao diện ra Internet qua CLOUDFLARE TUNNEL.
+#
+# VÌ SAO TUNNEL CHỨ KHÔNG PHẢI TRỎ IP — nhiều nhà mạng ở Việt Nam đặt thuê bao
+# sau CGNAT, tức là văn phòng KHÔNG thực sự sở hữu IP công cộng nào. Mở cổng
+# trên router lúc đó không có tác dụng gì cả: làm đúng hết vẫn không ai vào
+# được, và không có cách nào sửa ngoài việc gọi nhà mạng xin IP tĩnh trả phí.
+#
+# Tunnel đi hướng ngược lại: `cloudflared` TỰ MỞ kết nối đi ra Cloudflare rồi
+# giữ đó, Cloudflare đẩy request ngược vào qua chính đường đó. Không cổng nào mở
+# vào, không cần IP, không đụng router.
+#
+# ⚠️ BẮT BUỘC BẬT CLOUDFLARE ACCESS TRƯỚC KHI DÙNG THẬT.
+# Hệ thống này KHÔNG giới hạn số lần đăng nhập sai — không khoá tài khoản, không
+# chậm dần, không captcha. Trong mạng nội bộ thì chấp nhận được; mở ra Internet
+# thì bot quét sẽ tìm thấy trong vài giờ và thử mật khẩu không giới hạn tốc độ,
+# mà dữ liệu bên trong là toàn bộ danh sách khách hàng tiềm năng. Access đặt một
+# lớp đăng nhập bằng email công ty TRƯỚC khi request chạm tới ứng dụng, miễn phí
+# tới 50 người. Xem docs/TRUY_CAP_TU_XA.md.
+#
+# Cách dùng — nối vào sau hai file kia:
+#     docker compose -f docker-compose.yml -f docker-compose.web.yml \
+#                    -f docker-compose.tunnel.yml up -d
+# =====================================================================
+
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: botcraw-tunnel
+    restart: unless-stopped
+    # `--no-autoupdate`: bản trong image đã cố định, để nó tự cập nhật giữa
+    # chừng là đổi phiên bản đang chạy mà không ai biết. Nâng cấp bằng cách kéo
+    # image mới, để việc đó nằm trong tầm kiểm soát.
+    command: tunnel --no-autoupdate run
+    environment:
+      # Token lấy từ trang Cloudflare Zero Trust khi tạo tunnel. Nó là BÍ MẬT —
+      # ai có token này đều dựng được một đường vào mạng của anh. Để trong .env
+      # (đã bị .gitignore chặn), không bao giờ ghi thẳng vào file này.
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?Thiếu CLOUDFLARE_TUNNEL_TOKEN trong .env}
+    # Chỉ khởi động khi giao diện đã sẵn sàng. Thiếu dòng này thì tunnel lên
+    # trước, Cloudflare thấy đường đã thông và bắt đầu đẩy request vào một chỗ
+    # chưa có ai trả lời — người dùng nhận 502 trong vài chục giây đầu.
+    depends_on:
+      web:
+        condition: service_healthy
+    # `cloudflared` chỉ chuyển tiếp gói tin, không xử lý gì nặng.
+    mem_limit: 128m

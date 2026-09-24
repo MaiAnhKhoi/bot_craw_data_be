@@ -30,12 +30,15 @@ NGOAI_SETTINGS = {
     "BCD_WEB_PORT",
     "BCD_BACKUP_EVERY_HOURS",
     "BCD_BACKUP_KEEP",
+    # Token Cloudflare Tunnel — docker-compose.tunnel.yml đọc, xem
+    # docs/TRUY_CAP_TU_XA.md.
+    "CLOUDFLARE_TUNNEL_TOKEN",
 }
 
 
 def _da_khai() -> set[str]:
     noi_dung = DUONG_DAN.read_text(encoding="utf-8")
-    return set(re.findall(r"^(BCD_[A-Z0-9_]+)=", noi_dung, re.MULTILINE))
+    return set(re.findall(r"^([A-Z][A-Z0-9_]+)=", noi_dung, re.MULTILINE))
 
 
 def test_moi_bien_cua_settings_deu_co_trong_env_example():
