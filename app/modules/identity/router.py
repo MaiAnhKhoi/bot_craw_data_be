@@ -11,6 +11,8 @@ from app.core.response import ApiResponse
 from app.core.security import create_access_token, verify_password
 from app.modules.identity.entity import User
 from app.modules.identity.repository import UserRepository
+from app.modules.identity.response import UserResponse
+from app.modules.identity.service import UserService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -18,17 +20,6 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=128)
-
-
-class UserResponse(BaseModel):
-    id: int
-    username: str
-    full_name: str | None
-    is_active: bool
-
-    @classmethod
-    def of(cls, user: User) -> UserResponse:
-        return cls(id=user.id, username=user.username, full_name=user.full_name, is_active=user.is_active)
 
 
 class LoginResponse(BaseModel):
@@ -55,3 +46,27 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)) -> ApiResponse[L
 @router.get("/me", response_model=ApiResponse[UserResponse], summary="Thông tin tài khoản đang đăng nhập")
 def me(user: User = Depends(current_user)) -> ApiResponse[UserResponse]:
     return ApiResponse.ok(UserResponse.of(user))
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=1, max_length=128)
+
+
+@router.post(
+    "/change-password",
+    response_model=ApiResponse[dict],
+    summary="Tự đổi mật khẩu của tài khoản đang đăng nhập",
+)
+def change_password(
+    payload: ChangePasswordRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> ApiResponse[dict]:
+    """Ai đăng nhập cũng gọi được — đây là mật khẩu CỦA CHÍNH HỌ.
+
+    BẮT BUỘC hỏi mật khẩu hiện tại. Máy văn phòng hay để đăng nhập sẵn; không
+    hỏi thì ai ngồi vào máy bỏ trống cũng đổi được mật khẩu và chiếm tài khoản.
+    """
+    UserService(db).change_own_password(user, payload.current_password, payload.new_password)
+    return ApiResponse.ok({"updated": True})

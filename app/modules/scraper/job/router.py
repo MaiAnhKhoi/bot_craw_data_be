@@ -9,7 +9,7 @@ from sse_starlette.sse import EventSourceResponse
 from starlette.concurrency import run_in_threadpool
 
 from app.core.database import SessionLocal, get_db
-from app.core.deps import current_user, current_user_query_token
+from app.core.deps import current_user, current_user_query_token, require_admin
 from app.core.pagination import Page, PageParams, page_params
 from app.core.response import ApiResponse
 from app.modules.identity.entity import User
@@ -33,7 +33,7 @@ FINAL_STATUSES = (JOB_DONE, JOB_FAILED, JOB_CANCELLED)
 def create_job(
     payload: JobCreateRequest,
     db: Session = Depends(get_db),
-    _: User = Depends(current_user),
+    _: User = Depends(require_admin),
 ) -> ApiResponse[JobResponse]:
     return ApiResponse.ok(JobService(db).create(payload))
 
@@ -78,7 +78,7 @@ def list_remaining_areas(
 def preview_remaining_split(
     payload: RemainingSplitRequest,
     db: Session = Depends(get_db),
-    _: User = Depends(current_user),
+    _: User = Depends(require_admin),
 ) -> ApiResponse[SplitPlanResponse]:
     """Cùng một bản kế hoạch với `/split`, chỉ khác là không ghi gì.
 
@@ -96,7 +96,7 @@ def preview_remaining_split(
 def create_remaining_split(
     payload: RemainingSplitRequest,
     db: Session = Depends(get_db),
-    _: User = Depends(current_user),
+    _: User = Depends(require_admin),
 ) -> ApiResponse[JobResponse]:
     return ApiResponse.ok(JobService(db).create_split(payload))
 
@@ -111,17 +111,17 @@ def get_job(
 
 
 @router.post("/{job_id}/pause", response_model=ApiResponse[JobResponse], summary="Tạm dừng job")
-def pause_job(job_id: int, db: Session = Depends(get_db), _: User = Depends(current_user)):  # noqa: ANN201
+def pause_job(job_id: int, db: Session = Depends(get_db), _: User = Depends(require_admin)):  # noqa: ANN201
     return ApiResponse.ok(JobService(db).pause(job_id))
 
 
 @router.post("/{job_id}/resume", response_model=ApiResponse[JobResponse], summary="Chạy tiếp job")
-def resume_job(job_id: int, db: Session = Depends(get_db), _: User = Depends(current_user)):  # noqa: ANN201
+def resume_job(job_id: int, db: Session = Depends(get_db), _: User = Depends(require_admin)):  # noqa: ANN201
     return ApiResponse.ok(JobService(db).resume(job_id))
 
 
 @router.post("/{job_id}/cancel", response_model=ApiResponse[JobResponse], summary="Huỷ job")
-def cancel_job(job_id: int, db: Session = Depends(get_db), _: User = Depends(current_user)):  # noqa: ANN201
+def cancel_job(job_id: int, db: Session = Depends(get_db), _: User = Depends(require_admin)):  # noqa: ANN201
     return ApiResponse.ok(JobService(db).cancel(job_id))
 
 
