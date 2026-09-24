@@ -165,3 +165,21 @@ def test_loc_theo_job_hay_luot_tim_thi_bat_buoc_distinct():
     """
     assert PlaceRepository._can_khu_trung(PlaceFilter(job_id=1)) is True
     assert PlaceRepository._can_khu_trung(PlaceFilter(keyword="vựa trái cây")) is True
+
+
+def test_tim_kiem_chi_so_search_text_de_chi_muc_trigram_dung_duoc():
+    """Không thêm `OR name ILIKE ...` — vế đó vừa thừa vừa đắt.
+
+    Thừa: `build_search_text` đã gộp tên vào `search_text` ở dạng bỏ dấu, mà bản
+    bỏ dấu BAO TRÙM bản có dấu. Đo trên dữ liệu thật: 0 dòng khớp qua tên mà
+    không khớp qua `search_text`.
+
+    Đắt: `name` không có chỉ mục trigram, và một vế OR không đánh chỉ mục được
+    là cả câu phải quét toàn bảng. Đó là lý do `ix_places_search_text_trgm`
+    (448 KB, dựng riêng cho ô tìm kiếm này) có `idx_scan = 0` — chưa dùng lần nào.
+    """
+    sql = where_of(PlaceFilter(q="trái cây"))
+    assert "search_text ILIKE" in sql
+    assert "places.name ILIKE" not in sql, "vế OR trên `name` làm chỉ mục trigram vô dụng"
+    # Chuỗi tìm phải được BỎ DẤU để khớp với `search_text` (vốn đã bỏ dấu).
+    assert "trai cay" in sql

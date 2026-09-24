@@ -110,8 +110,19 @@ class PlaceRepository:
         if f.q:
             from app.modules.scraper.place.service import fold_text
 
-            needle = f"%{fold_text(f.q)}%"
-            stmt = stmt.where(or_(Place.search_text.ilike(needle), Place.name.ilike(f"%{f.q}%")))
+            # CHỈ so `search_text`, KHÔNG thêm `OR name ILIKE ...`.
+            #
+            # Vế `name` vừa thừa vừa đắt. Thừa vì `build_search_text` đã gộp sẵn
+            # tên vào `search_text` ở dạng bỏ dấu, mà so bản bỏ dấu thì BAO TRÙM
+            # bản có dấu — đo trên dữ liệu thật: 0 dòng khớp qua tên mà không
+            # khớp qua `search_text`.
+            #
+            # Đắt vì `name` KHÔNG có chỉ mục trigram. Một vế OR không đánh chỉ
+            # mục được là cả câu phải quét toàn bảng, nên
+            # `ix_places_search_text_trgm` (448 KB, dựng riêng cho ô tìm kiếm
+            # này) chưa được dùng lần nào — `idx_scan = 0`. Bỏ vế kia đi thì nó
+            # mới có cơ hội chạy.
+            stmt = stmt.where(Place.search_text.ilike(f"%{fold_text(f.q)}%"))
         if f.country:
             stmt = stmt.where(Place.country_code == f.country)
         if f.contact_status:

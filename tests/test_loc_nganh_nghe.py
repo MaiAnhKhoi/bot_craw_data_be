@@ -499,3 +499,18 @@ def test_co_sdt_thi_khong_dung_toi(job_trong):
     assert writer.bo_vi_thieu_sdt(p, job.id, "kw") is False
     assert db.get(Place, p.id) is not None
     assert db.get(ScrapeJob, job.id).rejected_count == 0
+
+
+def test_ten_dinh_chuoi_cung_ung_thi_khong_loai_thang():
+    """Lưới an toàn phải soi CẢ TÊN, không riêng nhãn ngành nghề.
+
+    Đo trên dữ liệu thật: `Reap Agro Products` bị Google gắn nhãn "Manufacturer"
+    — nhãn rõ nghĩa, rõ ràng không dính ngành, nên luật loại thẳng và AI KHÔNG
+    HỀ ĐƯỢC XEM. Nhưng tên ghi "Agro Products", tức là doanh nghiệp nông sản
+    thật. Đây là nhánh duy nhất luật tự quyết mà không ai kiểm lại, nên lọt ở
+    đây là mất luôn.
+    """
+    assert cham("Manufacturer", "Reap Agro Products", NGANH_IN) == RANH_GIOI
+    assert cham("Manufacturer", "Sunrise Food Trading", NGANH_IN) == RANH_GIOI
+    # Vẫn không kéo theo doanh nghiệp ngoài ngành.
+    assert cham("Manufacturer", "Sunrise Plastic Works", NGANH_IN) == NGHI_RAC

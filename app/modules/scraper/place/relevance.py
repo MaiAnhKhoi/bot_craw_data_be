@@ -154,20 +154,25 @@ def nhan_chung_chung(category: str | None) -> bool:
 # ngành khác thì phải sửa nó, và sửa sót sẽ hỏng âm thầm — nên nó nằm đây, cạnh
 # chỗ dùng, chứ không giấu trong cấu hình.
 CHUOI_CUNG_UNG = (
-    "food", "produce", "agri", "farm", "grocer", "supermarket", "hypermarket",
+    "food", "produce", "agri", "agro", "farm", "grocer", "supermarket", "hypermarket",
     "wholesal", "import", "export", "distribut", "trading", "packag", "market",
     "thuc pham", "nong san", "trai cay", "hoa qua", "rau", "cho", "sieu thi",
     "ban buon", "ban si", "xuat khau", "nhap khau", "phan phoi", "dong goi",
 )
 
 
-def trong_chuoi_cung_ung(category: str | None) -> bool:
-    """Nhãn này có dính tới chuỗi cung ứng thực phẩm không.
+def trong_chuoi_cung_ung(*phan: str | None) -> bool:
+    """Chuỗi nào trong số này có dính tới chuỗi cung ứng thực phẩm không.
+
+    Nhận NHIỀU chuỗi vì phải soi cả TÊN chứ không riêng nhãn ngành nghề. Đo trên
+    dữ liệu thật: `Reap Agro Products` bị Google gắn nhãn "Manufacturer" — nhãn
+    rõ nghĩa, rõ ràng không dính ngành, nên luật loại thẳng và AI không hề được
+    xem. Nhưng tên ghi "Agro Products", tức là doanh nghiệp nông sản thật.
 
     So trên chuỗi đã bỏ dấu chứ không so theo từ: "Vegetable wholesale market"
     và "Wholesaler" đều phải bắt được từ cùng một gốc "wholesal".
     """
-    return any(tu in fold_text(category) for tu in CHUOI_CUNG_UNG)
+    return any(tu in fold_text(x) for x in phan if x for tu in CHUOI_CUNG_UNG)
 
 
 def cham(
@@ -210,10 +215,11 @@ def cham(
         # không đủ để kết luận: "Rahim Fruits Stall" (nhãn "Cửa hàng") là thật,
         # còn "Dress store"/"Book store" thì không.
         return RANH_GIOI
-    if trong_chuoi_cung_ung(category):
-        # Nhãn không có trong danh mục NHƯNG vẫn nằm trong chuỗi cung ứng thực
-        # phẩm. Gần như chắc chắn là danh mục thiếu chứ không phải doanh nghiệp
-        # lạc đề — "Supermarket", "Food Processing Company", "Packaging company".
+    if trong_chuoi_cung_ung(category, name):
+        # Nhãn hoặc TÊN vẫn nằm trong chuỗi cung ứng thực phẩm dù không khớp
+        # danh mục. Gần như chắc chắn là danh mục thiếu chứ không phải doanh
+        # nghiệp lạc đề — "Supermarket", "Food Processing Company", hoặc
+        # `Reap Agro Products` bị Google gắn nhãn "Manufacturer".
         return RANH_GIOI
     # Nhãn rõ ràng, rõ ràng không dính gì tới ngành, tên cũng không. Chắc chắn
     # nhất trong ba ca — "Bakery", "Travel agency", "Pharmacy" nằm ở đây.
