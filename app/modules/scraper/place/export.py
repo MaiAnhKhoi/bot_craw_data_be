@@ -40,6 +40,12 @@ REASON_VI = {
     "REVIEWS_STALE_3Y": "Không có đánh giá mới trong 3 năm",
     "NO_HOURS": "Không công bố giờ mở cửa",
 }
+CONTACT_VI = {
+    "new": "Chưa liên hệ",
+    "called": "Đã gọi",
+    "interested": "Quan tâm",
+    "rejected": "Loại",
+}
 WEBSITE_STATUS_VI = {
     "OK": "Còn hoạt động",
     "DEAD": "Không truy cập được",
@@ -57,7 +63,10 @@ NGUON_QUOC_GIA_VI = {
 # (tiêu đề cột, hàm lấy giá trị, độ rộng)
 COLUMNS: tuple[tuple[str, Callable[[Place, list[str]], object], int], ...] = (
     ("Tên công ty", lambda p, k: p.name, 42),
-    ("Vị trí", lambda p, k: p.address, 50),
+    # Dùng được thì dùng địa chỉ đầy đủ, không có thì đành lấy mẩu từ thẻ —
+    # nhưng cột kế bên nói rõ đó là mẩu, để không ai gửi thư tới "Phan Huy Ích".
+    ("Vị trí", lambda p, k: p.address or p.address_short, 50),
+    ("Địa chỉ đầy đủ?", lambda p, k: "Có" if p.address else "Chưa", 15),
     ("Quốc gia", lambda p, k: geo.country_name(p.country_code), 16),
     # Cột này để người dùng biết dòng nào là PHỎNG ĐOÁN yếu mà soi lại.
     ("Nguồn quốc gia", lambda p, k: NGUON_QUOC_GIA_VI.get(p.country_source or "", ""), 20),
@@ -66,6 +75,9 @@ COLUMNS: tuple[tuple[str, Callable[[Place, list[str]], object], int], ...] = (
     ("Số điện thoại", lambda p, k: to_international(p.phone_e164, p.phone_national or p.phone_raw), 20),
     ("Website", lambda p, k: p.website, 34),
     ("Tình trạng", lambda p, k: LIVENESS_VI.get(p.liveness_label, p.liveness_label), 22),
+    # Xuất kèm để sale làm việc ngay trên file Excel mà vẫn biết ai đã gọi rồi.
+    ("Chăm sóc", lambda p, k: CONTACT_VI.get(p.contact_status, p.contact_status), 16),
+    ("Ghi chú chăm sóc", lambda p, k: p.contact_note, 40),
     ("Điểm tình trạng", lambda p, k: p.liveness_score, 15),
     ("Lý do nghi ngờ", lambda p, k: "; ".join(REASON_VI.get(r, r) for r in (p.liveness_reasons or [])), 46),
     ("Ngành nghề", lambda p, k: p.category, 26),
@@ -136,6 +148,7 @@ def export_json(places: Iterable[Place], keywords: dict[int, list[str]], path: P
                     {
                         "name": p.name,
                         "address": p.address,
+                        "address_short": p.address_short,
                         "country_code": p.country_code,
                         "country_name": geo.country_name(p.country_code),
                         "country_source": p.country_source,

@@ -374,3 +374,179 @@ def test_needs_detail_ton_trong_ttl(sample_job):
 def test_env_khong_lo_secret_qua_health(client):
     body = client.get("/api/v1/health").text
     assert os.environ.get("BCD_JWT_SECRET_KEY", "khong-ton-tai") not in body
+
+
+# ---------- lưới chắn: mọi endpoint GHI-KHÔNG-ĐỔI phải sống ----------
+def test_moi_endpoint_doc_deu_khong_tra_500(client, auth):
+    """Gọi thử MỌI route GET không tham số đường dẫn, không cái nào được 500.
+
+    Viết ra sau khi `/places/queries` chết bằng 500 suốt một lượt build mà không
+    test nào hé răng: `PlaceRepository.query_counts` bị xoá nhầm trong lúc sửa
+    một hàm nằm ngay cạnh nó. Không có lưới này thì lỗi kiểu "service gọi một
+    phương thức repository không còn tồn tại" chỉ lộ ra khi người dùng bấm vào.
+
+    Lấy danh sách đường dẫn từ LƯỢC ĐỒ OPENAPI chứ không duyệt `app.routes`:
+    cấu trúc router nội bộ của FastAPI đổi theo phiên bản (bản hiện tại gói mọi
+    thứ trong `_IncludedRouter` không có `.routes`), còn OpenAPI là giao kèo công
+    khai. Thêm endpoint mới là tự động được phủ, không phải khai tay.
+    """
+    from app.main import app as ung_dung
+
+    bo_qua = {
+        "/api/v1/places/export",   # trả file, cần tham số riêng
+        # SSE: luồng vô hạn, gọi vào là test treo vĩnh viễn (đã dính).
+        # `/jobs/{job_id}/events` tự loại vì có tham số đường dẫn.
+        "/api/v1/places/events",
+    }
+    loi: list[str] = []
+    da_thu = 0
+    for duong_dan, cac_method in ung_dung.openapi()["paths"].items():
+        if "get" not in cac_method or "{" in duong_dan or duong_dan in bo_qua:
+            continue
+        da_thu += 1
+        r = client.get(duong_dan, headers=auth)
+        if r.status_code >= 500:
+            loi.append(f"{duong_dan} -> {r.status_code}: {r.text[:200]}")
+
+    assert da_thu > 5, f"chỉ thử được {da_thu} route, lược đồ OpenAPI có vấn đề"
+    assert not loi, "Endpoint trả lỗi hệ thống:\n" + "\n".join(loi)
+
+
+# ---------- bộ từ khoá đã lưu ----------
+@pytest.fixture
+def throwaway_sets(client, auth):
+    """Thu gom id bộ từ khoá do test tạo rồi xoá sạch."""
+    created: list[int] = []
+    yield created
+    for sid in created:
+        client.delete(f"/api/v1/keywords/sets/{sid}", headers=auth)
+
+
+def test_luu_bo_tu_khoa_roi_goi_lai_duoc(client, auth, throwaway_sets):
+    tag = uuid.uuid4().hex[:8]
+    kw = [f"vua trai cay {tag}", f"cong ty xnk {tag}"]
+    r = client.post(
+        "/api/v1/keywords/sets", headers=auth, json={"name": f"bo-{tag}", "keywords": kw}
+    )
+    assert r.status_code == 200, r.text
+    bo = r.json()["data"]
+    throwaway_sets.append(bo["id"])
+    assert bo["keywords"] == kw
+    assert bo["translated_countries"] == []
+
+    ds = client.get("/api/v1/keywords/sets", headers=auth).json()["data"]
+    assert any(b["id"] == bo["id"] and b["keywords"] == kw for b in ds)
+
+
+def test_trung_ten_thi_GHI_DE_chu_khong_tao_ban_thu_hai(client, auth, throwaway_sets):
+    """Không phân biệt hoa thường và khoảng trắng thừa.
+
+    Thiếu chốt này thì mỗi lần bấm Lưu lại đẻ thêm một dòng, và ô chọn đầy những
+    cái tên nhìn giống hệt nhau.
+    """
+    tag = uuid.uuid4().hex[:8]
+    a = client.post(
+        "/api/v1/keywords/sets", headers=auth, json={"name": f"bo-{tag}", "keywords": ["mot"]}
+    ).json()["data"]
+    throwaway_sets.append(a["id"])
+    b = client.post(
+        "/api/v1/keywords/sets",
+        headers=auth,
+        json={"name": f"   BO-{tag.upper()}  ", "keywords": ["mot", "hai"]},
+    ).json()["data"]
+
+    assert b["id"] == a["id"], "tên trùng phải ghi đè, không tạo bản mới"
+    assert b["keywords"] == ["mot", "hai"]
+
+
+def test_bao_dung_so_nuoc_da_dich_san(client, auth, throwaway_sets):
+    """Đây là toàn bộ giá trị của tính năng: nhìn ra nước nào chọn vào thì KHÔNG
+    tốn lượt gọi AI."""
+    from app.modules.keyword.entity import KeywordTranslation
+    from app.modules.keyword.service import source_hash
+
+    tag = uuid.uuid4().hex[:8]
+    kw = [f"tu khoa {tag}"]
+    bo = client.post(
+        "/api/v1/keywords/sets", headers=auth, json={"name": f"bo-{tag}", "keywords": kw}
+    ).json()["data"]
+    throwaway_sets.append(bo["id"])
+
+    digest = source_hash(kw)
+    db = SessionLocal()
+    for ma in ("TH", "JP"):
+        db.add(
+            KeywordTranslation(
+                source_hash=digest, source_keywords=kw, country_code=ma,
+                language="en", keywords=["x"], model="test",
+            )
+        )
+    db.commit()
+    db.close()
+
+    try:
+        ds = client.get("/api/v1/keywords/sets", headers=auth).json()["data"]
+        moi = next(b for b in ds if b["id"] == bo["id"])
+        assert sorted(moi["translated_countries"]) == ["JP", "TH"]
+    finally:
+        db = SessionLocal()
+        db.execute(
+            text("DELETE FROM keyword_translations WHERE source_hash = :h"), {"h": digest}
+        )
+        db.commit()
+        db.close()
+
+
+def test_xoa_bo_KHONG_lam_mat_ban_dich(client, auth):
+    """Bản dịch là thứ đã trả tiền để có. Xoá một cái tên không được phép đốt nó.
+
+    Lưu lại cùng bộ từ khoá sau này phải thấy lại ngay số nước cũ.
+    """
+    from app.modules.keyword.entity import KeywordTranslation
+    from app.modules.keyword.service import source_hash
+
+    tag = uuid.uuid4().hex[:8]
+    kw = [f"tu khoa {tag}"]
+    digest = source_hash(kw)
+    db = SessionLocal()
+    db.add(
+        KeywordTranslation(
+            source_hash=digest, source_keywords=kw, country_code="TH",
+            language="th", keywords=["x"], model="test",
+        )
+    )
+    db.commit()
+    db.close()
+
+    try:
+        bo = client.post(
+            "/api/v1/keywords/sets", headers=auth, json={"name": f"bo-{tag}", "keywords": kw}
+        ).json()["data"]
+        assert bo["translated_countries"] == ["TH"]
+
+        assert client.delete(f"/api/v1/keywords/sets/{bo['id']}", headers=auth).status_code == 200
+
+        lai = client.post(
+            "/api/v1/keywords/sets", headers=auth, json={"name": f"bo-{tag}", "keywords": kw}
+        ).json()["data"]
+        assert lai["translated_countries"] == ["TH"], "xoá bộ đã làm mất bản dịch"
+        client.delete(f"/api/v1/keywords/sets/{lai['id']}", headers=auth)
+    finally:
+        db = SessionLocal()
+        db.execute(
+            text("DELETE FROM keyword_translations WHERE source_hash = :h"), {"h": digest}
+        )
+        db.commit()
+        db.close()
+
+
+@pytest.mark.parametrize(
+    ("body", "ma_loi"),
+    [({"name": "   ", "keywords": ["a"]}, 422), ({"name": "x", "keywords": []}, 422)],
+)
+def test_du_lieu_thieu_thi_tu_choi(client, auth, body, ma_loi):
+    assert client.post("/api/v1/keywords/sets", headers=auth, json=body).status_code == ma_loi
+
+
+def test_xoa_bo_khong_ton_tai_tra_404(client, auth):
+    assert client.delete("/api/v1/keywords/sets/99999999", headers=auth).status_code == 404

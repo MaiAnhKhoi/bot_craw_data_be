@@ -18,8 +18,9 @@ from sqlalchemy.orm import Session
 
 from app.core import ai
 from app.core.config import get_settings
+from app.core.exceptions import AppError, NotFoundError
 from app.modules.geo import service as geo
-from app.modules.keyword.entity import KeywordTranslation
+from app.modules.keyword.entity import KeywordSet, KeywordTranslation
 
 # Việt Nam dùng thẳng từ khoá gốc — không dịch gì cả.
 HOME_COUNTRY = "VN"
@@ -213,3 +214,101 @@ class KeywordService:
             "language": language,
             "keywords": list(keywords),
         }
+
+
+def ten_chuan(name: str) -> str:
+    """Tên đã gọn khoảng trắng + viết thường, dùng để so trùng.
+
+    Tách riêng khỏi tên hiển thị: người dùng gõ "Trái Cây Xuất Khẩu" hay
+    "trái cây xuất khẩu" đều là một bộ, nhưng tên hiện ra phải giữ đúng cách họ gõ.
+    """
+    return " ".join((name or "").split()).lower()
+
+
+class KeywordSetService:
+    """Bộ từ khoá có tên — chỉ để GỌI LẠI CHÍNH XÁC, không lưu bản dịch.
+
+    Bản dịch vẫn nằm ở `keyword_translations`; hai bảng nối nhau qua `source_hash`,
+    nên chọn lại một bộ đã lưu là trúng đệm 100% cho mọi nước từng dịch.
+    """
+
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def _da_dich(self, hashes: list[str]) -> dict[str, list[str]]:
+        """Mỗi `source_hash` đã có bản dịch cho những nước nào.
+
+        Một câu truy vấn cho TẤT CẢ các bộ, không phải mỗi bộ một câu — danh sách
+        này hiện ngay trên ô chọn nên nó chạy mỗi lần mở form tạo job.
+        """
+        if not hashes:
+            return {}
+        rows = self.db.execute(
+            select(KeywordTranslation.source_hash, KeywordTranslation.country_code)
+            .where(KeywordTranslation.source_hash.in_(hashes))
+            .order_by(KeywordTranslation.country_code)
+        ).all()
+        out: dict[str, list[str]] = {}
+        for h, ma in rows:
+            out.setdefault(h, []).append(ma)
+        return out
+
+    def list(self) -> list[dict]:
+        bo = list(
+            self.db.execute(select(KeywordSet).order_by(KeywordSet.updated_at.desc()))
+            .scalars()
+            .all()
+        )
+        da_dich = self._da_dich([b.source_hash for b in bo])
+        return [
+            {
+                "id": b.id,
+                "name": b.name,
+                "keywords": list(b.keywords or []),
+                "translated_countries": da_dich.get(b.source_hash, []),
+                "created_at": b.created_at,
+                "updated_at": b.updated_at,
+            }
+            for b in bo
+        ]
+
+    def save(self, name: str, keywords: list[str]) -> dict:
+        """Ghi đè theo TÊN (không phân biệt hoa thường), không tạo bản trùng tên."""
+        kw = normalize(keywords)
+        if not kw:
+            raise AppError(
+                "Bộ từ khoá phải có ít nhất một từ", code="VALIDATION_ERROR", status_code=422
+            )
+        khoa = ten_chuan(name)
+        if not khoa:
+            raise AppError("Thiếu tên bộ từ khoá", code="VALIDATION_ERROR", status_code=422)
+
+        bo = self.db.execute(
+            select(KeywordSet).where(KeywordSet.name_key == khoa)
+        ).scalar_one_or_none()
+        if bo is None:
+            bo = KeywordSet(name_key=khoa)
+            self.db.add(bo)
+        bo.name = " ".join(name.split())
+        bo.keywords = kw
+        bo.source_hash = source_hash(kw)
+        self.db.commit()
+        self.db.refresh(bo)
+        da_dich = self._da_dich([bo.source_hash])
+        return {
+            "id": bo.id,
+            "name": bo.name,
+            "keywords": list(bo.keywords or []),
+            "translated_countries": da_dich.get(bo.source_hash, []),
+            "created_at": bo.created_at,
+            "updated_at": bo.updated_at,
+        }
+
+    def delete(self, set_id: int) -> None:
+        bo = self.db.get(KeywordSet, set_id)
+        if bo is None:
+            raise NotFoundError(f"Không tìm thấy bộ từ khoá {set_id}")
+        # CHỈ xoá bộ, KHÔNG đụng `keyword_translations`: bản dịch là thứ đã trả
+        # tiền để có. Lưu lại bộ cùng tên sau này là dùng lại được ngay.
+        self.db.delete(bo)
+        self.db.commit()

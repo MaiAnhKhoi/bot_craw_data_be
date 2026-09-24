@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -9,7 +11,13 @@ from app.core.database import get_db
 from app.core.deps import current_user
 from app.core.response import ApiResponse
 from app.modules.identity.entity import User
-from app.modules.keyword.service import KeywordService, countries_of_locations, normalize, source_hash
+from app.modules.keyword.service import (
+    KeywordService,
+    KeywordSetService,
+    countries_of_locations,
+    normalize,
+    source_hash,
+)
 
 router = APIRouter(prefix="/keywords", tags=["keywords"])
 
@@ -88,6 +96,70 @@ def plan(
     được mỗi khi người dùng sửa từ khoá/địa điểm để chặn ngay tại chỗ."""
     result = KeywordService(db).plan(payload.keywords, _countries_of(payload))
     return ApiResponse.ok(PlanResponse(**result))
+
+
+class KeywordSetResponse(BaseModel):
+    """Một bộ từ khoá đã lưu."""
+
+    id: int
+    name: str
+    keywords: list[str]
+    # Các nước ĐÃ có bản dịch sẵn cho đúng bộ này. Chọn nước nằm trong danh sách
+    # này thì KHÔNG tốn lượt gọi AI — đó là toàn bộ lý do tính năng này tồn tại.
+    translated_countries: list[str]
+    created_at: datetime
+    updated_at: datetime
+
+
+class KeywordSetRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    keywords: list[str] = Field(min_length=1)
+
+
+@router.get(
+    "/sets",
+    response_model=ApiResponse[list[KeywordSetResponse]],
+    summary="Các bộ từ khoá đã lưu, kèm số nước đã dịch sẵn",
+)
+def list_sets(
+    db: Session = Depends(get_db),
+    _: User = Depends(current_user),
+) -> ApiResponse[list[KeywordSetResponse]]:
+    return ApiResponse.ok([KeywordSetResponse(**b) for b in KeywordSetService(db).list()])
+
+
+@router.post(
+    "/sets",
+    response_model=ApiResponse[KeywordSetResponse],
+    summary="Lưu bộ từ khoá (trùng tên thì ghi đè)",
+)
+def save_set(
+    payload: KeywordSetRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(current_user),
+) -> ApiResponse[KeywordSetResponse]:
+    """Ghi đè theo TÊN, không phân biệt hoa thường.
+
+    Lưu lại cùng một bộ từ khoá KHÔNG làm mất bản dịch: bản dịch nằm ở bảng khác,
+    nối qua `source_hash` của chính bộ từ khoá đó.
+    """
+    bo = KeywordSetService(db).save(payload.name, payload.keywords)
+    return ApiResponse.ok(KeywordSetResponse(**bo))
+
+
+@router.delete(
+    "/sets/{set_id}",
+    response_model=ApiResponse[dict],
+    summary="Xoá một bộ từ khoá đã lưu",
+)
+def delete_set(
+    set_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(current_user),
+) -> ApiResponse[dict]:
+    """CHỈ xoá bộ, KHÔNG đụng tới bản dịch đã có — đó là thứ đã trả tiền để có."""
+    KeywordSetService(db).delete(set_id)
+    return ApiResponse.ok({"deleted": True})
 
 
 @router.get("/status", response_model=ApiResponse[dict], summary="AI có sẵn sàng không")

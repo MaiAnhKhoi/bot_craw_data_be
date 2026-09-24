@@ -35,7 +35,12 @@ class PlaceResponse(BaseModel):
 
     id: int
     name: str
-    address: str | None          # vị trí
+    # ĐỊA CHỈ ĐẦY ĐỦ, hoặc null. Không bao giờ là một mẩu — xem entity.Place.
+    address: str | None
+    # Mẩu địa chỉ trên thẻ kết quả, chỉ dùng khi `address` còn null. Giao diện
+    # PHẢI hiện nó kèm dấu hiệu chưa đầy đủ, đừng trộn vào cùng một ô như
+    # địa chỉ thật.
+    address_short: str | None
     country_code: str | None     # ISO alpha-2, ví dụ 'TH'
     country_name: str | None     # tên tiếng Việt, ví dụ 'Thái Lan'
     country_source: str | None   # address | coords | gl — xem entity.Place
@@ -60,6 +65,10 @@ class PlaceResponse(BaseModel):
     lat: float | None
     lng: float | None
     maps_url: str | None
+    # Trạng thái CHĂM SÓC — khác hẳn `status` (quét) và `liveness_label` (sống/chết).
+    contact_status: str          # new | called | interested | rejected
+    contact_note: str | None
+    contact_at: datetime | None
     keywords: list[str] = []
     detail_scraped: bool
     scraped_at: datetime | None
@@ -71,6 +80,7 @@ class PlaceResponse(BaseModel):
             id=p.id,
             name=p.name,
             address=p.address,
+            address_short=p.address_short,
             country_code=p.country_code,
             country_name=geo.country_name(p.country_code),
             country_source=p.country_source,
@@ -91,6 +101,9 @@ class PlaceResponse(BaseModel):
             lat=p.lat,
             lng=p.lng,
             maps_url=p.maps_url,
+            contact_status=p.contact_status,
+            contact_note=p.contact_note,
+            contact_at=p.contact_at,
             keywords=keywords or [],
             detail_scraped=p.detail_scraped,
             scraped_at=p.scraped_at,

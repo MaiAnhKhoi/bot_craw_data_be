@@ -59,3 +59,42 @@ class JobCreateRequest(BaseModel):
         if v not in {"always", "missing_only", "never"}:
             raise ValueError("detail_mode phải là always | missing_only | never")
         return v
+
+
+class RemainingSplitRequest(BaseModel):
+    """Sinh một job mới từ các dòng đang chọn ở trang "Địa bàn còn sót".
+
+    Chỉ nhận CHUỖI TRUY VẤN, không nhận `stop_reason`: việc phải làm với mỗi dòng
+    do server tự tra lại từ lần quét gần nhất. Giao diện có thể đã mở từ sáng,
+    còn quyết định "chia nhỏ hay chạy lại" thì không được dựa trên dữ liệu cũ.
+    """
+
+    queries: list[str] = Field(
+        min_length=1,
+        max_length=500,
+        description="Chuỗi truy vấn của các dòng đang chọn",
+    )
+    name: str | None = Field(
+        None, max_length=200, description="Tên job mới; bỏ trống thì đặt theo ngày giờ"
+    )
+    max_results_per_query: int = Field(
+        200,
+        ge=1,
+        le=500,
+        description=(
+            "Trần kết quả của job mới. Dòng dừng vì 'cap' chỉ cần đúng con số này "
+            "cao hơn lần trước là đủ, không phải chia nhỏ địa bàn."
+        ),
+    )
+
+    @field_validator("queries", mode="before")
+    @classmethod
+    def _clean_queries(cls, v):  # noqa: ANN001, ANN206
+        if not isinstance(v, list):
+            return v
+        out: list[str] = []
+        for item in v:
+            s = str(item).strip()
+            if s and s not in out:
+                out.append(s)
+        return out

@@ -79,6 +79,7 @@ class PlaceFilter:
     job_id: int | None = None
     keyword: str | None = None
     country: str | None = None
+    contact_status: str | None = None
     liveness: list[str] = field(default_factory=list)
     business_status: str | None = None
     has_phone: bool | None = None
@@ -111,6 +112,8 @@ class PlaceRepository:
             stmt = stmt.where(or_(Place.search_text.ilike(needle), Place.name.ilike(f"%{f.q}%")))
         if f.country:
             stmt = stmt.where(Place.country_code == f.country)
+        if f.contact_status:
+            stmt = stmt.where(Place.contact_status == f.contact_status)
         if f.liveness:
             stmt = stmt.where(Place.liveness_label.in_(f.liveness))
         if f.business_status:
@@ -146,35 +149,36 @@ class PlaceRepository:
         result = self.db.execute(stmt.execution_options(stream_results=True, yield_per=chunk))
         yield from result.scalars()
 
-    def pulse(self) -> tuple[int, int | None, datetime | None]:
-        """Ba con số đủ để biết bảng địa điểm có gì mới chưa.
+    def pulse(self) -> tuple[int | None, datetime | None]:
+        """Hai con số đủ để biết bảng địa điểm có gì mới chưa.
 
-        Dùng cho luồng SSE nên phải RẺ và chạy rất thường xuyên. Gom hết vào MỘT
-        câu lệnh để Postgres chỉ quét bảng một lượt:
-          * `count(*)` — có thêm địa điểm mới không
-          * `max(id)`  — phân biệt "thêm 1 xoá 1" với "không có gì đổi"
-          * mốc thời gian đổi gần nhất
+        CỐ Ý KHÔNG đếm `count(*)`. Postgres bắt buộc quét toàn bảng cho phép đếm
+        đó dù có chỉ mục hay không, và nó chính là toàn bộ chi phí của câu này:
+        đo ở 300.000 dòng là 70ms có đếm, 2,4ms khi bỏ đếm và có chỉ mục.
+        Mà con số đó KHÔNG AI DÙNG — giao diện chỉ lấy gói tin làm tín hiệu "có
+        thay đổi" rồi tự nạp lại danh sách (xem use-place-events.ts).
 
-        Mốc thời gian phải lấy CẢ BA cột, không chỉ `last_seen_at`. Đo thực tế:
-        quét Chiang Mai, pha tìm kiếm nhét 12 địa điểm vào trong khoảng một giây
-        (một lần đổi `last_seen_at`), rồi pha chi tiết chạy tiếp gần hai phút —
-        mỗi địa điểm được bổ sung website, chấm lại điểm sống/chết. Pha dài nhất
-        đó chỉ ghi `last_verified_at`/`website_checked_at`, nên nếu chỉ nhìn
-        `last_seen_at` thì bảng đứng im suốt cả pha, đúng lúc người dùng đang
-        ngồi nhìn nó chạy.
+          * `max(id)`      — có thêm địa điểm mới không
+          * mốc đổi gần nhất — bắt cả trường hợp CẬP NHẬT bản ghi cũ (bổ sung
+            website, chấm lại điểm sống/chết), thứ mà `max(id)` không thấy.
+            Phải lấy CẢ BA cột: pha tìm kiếm chỉ ghi `last_seen_at`, còn pha chi
+            tiết — pha DÀI NHẤT — chỉ ghi `last_verified_at`/`website_checked_at`.
+            Chỉ nhìn `last_seen_at` thì bảng đứng im suốt pha đó.
+
+        Giới hạn đã biết: XOÁ một địa điểm không làm đổi hai con số này. Chấp
+        nhận được vì ứng dụng không có đường nào xoá địa điểm.
         """
         row = self.db.execute(
             select(
-                func.count(Place.id),
                 func.max(Place.id),
                 func.greatest(
-                    func.max(Place.last_seen_at),       # thêm địa điểm mới
-                    func.max(Place.last_verified_at),   # pha chi tiết đã xử lý xong
-                    func.max(Place.website_checked_at), # kiểm tra website xong
+                    func.max(Place.last_seen_at),
+                    func.max(Place.last_verified_at),
+                    func.max(Place.website_checked_at),
                 ),
             )
         ).one()
-        return int(row[0]), row[1], row[2]
+        return row[0], row[1]
 
     def query_counts(self) -> list[tuple[str, int]]:
         """(chuỗi truy vấn, số địa điểm) cho MỌI lượt tìm đã có dữ liệu."""

@@ -172,6 +172,31 @@ class JobRepository:
         con_sot = remaining_areas(rows, stop_reason)
         return con_sot[params.offset : params.offset + params.size], len(con_sot)
 
+    def latest_runs_for(self, queries: list[str]) -> dict[str, object]:
+        """Lần quét THẬT gần nhất của từng chuỗi truy vấn được hỏi.
+
+        Nút "chia nhỏ" ở trang Địa bàn còn sót phải hỏi lại chỗ này chứ không tin
+        `stop_reason` giao diện gửi lên: trang có thể đã mở từ sáng, trong khi một
+        job khác vừa quét lại xong chính địa bàn đó. Tin vào bản cũ là đi bung một
+        tỉnh đã trọn vẹn thành 168 truy vấn thừa.
+
+        Kéo về MỌI lần chạy của các chuỗi này rồi mới gộp — cùng lý do với
+        `list_remaining_areas`: chỉ có nhìn hết mới biết lần nào mới nhất.
+        """
+        if not queries:
+            return {}
+        rows = self.db.execute(
+            select(
+                JobQuery.id,
+                JobQuery.query,
+                JobQuery.stop_reason,
+                JobQuery.finished_at,
+                JobQuery.hl,
+                JobQuery.gl,
+            ).where(JobQuery.query.in_(queries))
+        ).all()
+        return {row.query: row for row in latest_run_per_query(rows)}
+
     def next_pending_query(self, job_id: int) -> JobQuery | None:
         """Lấy MỘT truy vấn còn chờ. `running` cũng được nhận lại: worker có thể đã
         chết giữa chừng, để nguyên thì truy vấn đó treo vĩnh viễn."""

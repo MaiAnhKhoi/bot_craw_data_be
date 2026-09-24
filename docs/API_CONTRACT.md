@@ -111,6 +111,42 @@ type RemainingArea = {
   job_id: number
   job_name: string
 }
+
+/*
+ * Sinh MỘT job mới từ các dòng "Địa bàn còn sót" đang chọn.
+ * Chỉ gửi chuỗi truy vấn — server tự tra lại lý do dừng của lần quét gần nhất
+ * rồi quyết định việc phải làm. Trang có thể đã mở từ sáng, trong khi một job
+ * khác vừa quét lại xong chính địa bàn đó.
+ */
+type RemainingSplitRequest = {
+  queries: string[]                // >= 1, tối đa 500
+  name?: string | null             // bỏ trống -> "Chia nhỏ địa bàn còn sót 23/09 14:05"
+  max_results_per_query?: number   // mặc định 200 — trần mới cho các dòng "cap"
+}
+
+type SplitAction =
+  | "subdivide"   // cut_off -> bung địa bàn xuống cấp dưới
+  | "raise_cap"   // cap     -> chạy lại y nguyên, chỉ khác trần
+  | "retry"       // unknown -> chạy lại y nguyên
+  | "skip"        // không còn việc phải làm
+
+type SplitPlanItem = {
+  query: string
+  stop_reason: "cut_off" | "cap" | "unknown" | null
+  hanh_dong: SplitAction
+  tu_khoa: string | null
+  dia_diem: string | null
+  cap: "country" | "province" | "ward" | null   // cấp của địa bàn hiện tại
+  so_truy_van: number          // dòng này sinh ra bao nhiêu truy vấn
+  ly_do: string | null         // vì sao 0 — hiện thẳng cho người dùng
+}
+
+type SplitPlan = {
+  items: SplitPlanItem[]
+  total_queries: number
+  skipped: number              // số dòng không sinh ra truy vấn nào
+  estimated_minutes: number    // ~40 giây/truy vấn, làm tròn lên
+}
 ```
 
 | Method | Path | Body / Query | Data |
@@ -118,6 +154,8 @@ type RemainingArea = {
 | POST | `/jobs` | `JobCreate` | `Job` |
 | GET | `/jobs` | `page, size, status?` | `Page<Job>` |
 | GET | `/jobs/remaining-areas` | `page, size, stop_reason?` | `Page<RemainingArea>` |
+| POST | `/jobs/remaining-areas/split-preview` | `RemainingSplitRequest` | `SplitPlan` |
+| POST | `/jobs/remaining-areas/split` | `RemainingSplitRequest` | `Job` |
 | GET | `/jobs/{id}` | — | `JobDetail` |
 | POST | `/jobs/{id}/pause` | — | `Job` |
 | POST | `/jobs/{id}/resume` | — | `Job` |
@@ -159,6 +197,51 @@ Những địa bàn Google chưa trả hết mà người dùng còn phải xử
   thì địa bàn còn sót sẽ lặng lẽ rơi khỏi danh sách đúng lúc nó vẫn còn sót.
 - Sắp xếp: lần quét mới nhất lên đầu.
 
+### POST /jobs/remaining-areas/split-preview · POST /jobs/remaining-areas/split
+
+Bước còn thiếu của quy trình: trang "Địa bàn còn sót" cho NHÌN thấy tỉnh nào bị Google
+cắt, hai endpoint này biến các dòng đang chọn thành **một** job mới. Cùng một bản kế
+hoạch, khác đúng một điểm — `split-preview` không ghi gì, `split` thì tạo job.
+
+Việc phải làm với mỗi dòng do server tra lại từ lần quét gần nhất, không lấy theo
+`stop_reason` mà giao diện đang hiển thị:
+
+| Lý do dừng | `hanh_dong` | Làm gì |
+|---|---|---|
+| `cut_off` | `subdivide` | Tách chuỗi thành `<từ khoá> <địa điểm>`, bung địa điểm xuống cấp dưới (quốc gia → tỉnh, tỉnh → phường/xã), rồi ghép lại với từ khoá cũ |
+| `cap` | `raise_cap` | Chạy lại NGUYÊN VĂN. Địa bàn không có lỗi gì — chỉ cần `max_results_per_query` cao hơn lần trước |
+| `unknown` | `retry` | Chạy lại NGUYÊN VĂN |
+| khác / chưa từng chạy | `skip` | Không sinh dòng nào, kèm `ly_do` |
+
+**Bung được tới đâu** — dữ liệu cấp phường/xã **chỉ Việt Nam mới có** (§5). Nên:
+
+- Tỉnh Việt Nam → ra phường/xã (TP.HCM: 168 truy vấn cho mỗi từ khoá).
+- Tỉnh nước ngoài → **không sinh dòng nào**, `ly_do` nói rõ. Đây là chỗ dễ hỏng ngầm
+  nhất: `/geo/expand` với `ward:"ALL"` cho một tỉnh không có phường/xã KHÔNG báo lỗi,
+  nó trả về đúng một dòng — chính tỉnh cũ — nên nếu không chặn thì người dùng nhận một
+  job y hệt cái vừa chạy.
+- Đã ở cấp phường/xã, hoặc chuỗi tự gõ tay mà danh mục không nhận ra (danh mục dùng tên
+  chuẩn: `Krung Thep Maha Nakhon`, không phải `Bangkok`) → cũng không sinh dòng nào,
+  kèm `ly_do`.
+
+Job tạo ra luôn đặt **`skip_recent_queries = false`**. Không phải tuỳ chọn: cơ chế bỏ
+qua coi `cut_off` là "chạy lại cũng ra y hệt", nên để mặc định `true` thì chính những
+truy vấn vừa sinh ra ở đây bị bỏ qua sạch — job báo hoàn tất sau vài giây mà không quét
+gì. `params.keywords` / `params.locations` ghi lại những gì đã dùng; danh sách truy vấn
+THẬT nằm ở `job_queries`.
+
+Các tuỳ chọn quét còn lại (`detail_mode`, `enrich_website`, `ttl_days`, `region`) lấy
+GIÁ TRỊ MẶC ĐỊNH, không kế thừa job cũ: các dòng được chọn có thể đến từ nhiều job khác
+nhau nên không có "job cũ" nào để kế thừa. `hl`/`gl` thì ngược lại — tính theo quốc gia
+của từng truy vấn như mọi job khác, và giữ nguyên giá trị lần chạy trước khi không nhận
+ra được địa bàn (đổi `gl` là đổi luôn địa bàn Google tìm, "chạy lại y nguyên" sẽ không
+còn y nguyên).
+
+Truy vấn trùng nhau chỉ sinh MỘT lần (chọn cả một tỉnh `cut_off` lẫn một phường của nó);
+dòng bị nuốt vẫn có mặt trong `items` với `so_truy_van: 0` và `ly_do` giải thích.
+
+Không sinh được truy vấn nào → `split` trả `VALIDATION_ERROR` (422) chứ không tạo job rỗng.
+
 ## 3. Places
 
 **4 trường bắt buộc theo yêu cầu**: `name` (tên công ty), `address` (vị trí),
@@ -172,7 +255,13 @@ type WebsiteStatus = "OK" | "DEAD" | "PARKED" | "UNCHECKED" | "NONE"
 type Place = {
   id: number
   name: string
-  address: string | null            // vị trí (địa chỉ đầy đủ nếu đã mở trang chi tiết)
+  // ĐỊA CHỈ ĐẦY ĐỦ, hoặc null. Chỉ lấy từ trang chi tiết nên luôn có đủ
+  // đường/phường/tỉnh/quốc gia. KHÔNG bao giờ là một mẩu.
+  address: string | null
+  // Mẩu địa chỉ trên thẻ kết quả ("Phan Huy Ích"), chỉ có nghĩa khi `address`
+  // còn null. Giao diện PHẢI hiện kèm dấu hiệu chưa đầy đủ. Đo thật trên 2.526
+  // dòng chưa mở chi tiết: 39% không có cả mẩu này, phần còn lại dài TB 20 ký tự.
+  address_short: string | null
   country_code: string | null       // ISO alpha-2, vd "TH"; null với dữ liệu quét trước V0003
   country_name: string | null       // tên tiếng Việt tra sẵn ở backend, vd "Thái Lan"
   // NGUỒN đã xác định ra quốc gia — đây là một PHỎNG ĐOÁN, và nguồn cho biết
@@ -204,6 +293,11 @@ type Place = {
   latest_review_days: number | null // tuổi đánh giá mới nhất (ngày)
   lat: number | null; lng: number | null
   maps_url: string | null
+  // Trạng thái CHĂM SÓC của bên mình — khác hẳn `status` (worker đã quét chưa)
+  // và `liveness_label` (doanh nghiệp còn sống không). Một lead có thể mang cả ba.
+  contact_status: "new" | "called" | "interested" | "rejected"
+  contact_note: string | null
+  contact_at: string | null   // chỉ đổi khi TRẠNG THÁI đổi, không đổi khi sửa ghi chú
   keywords: string[]
   detail_scraped: boolean
   scraped_at: string | null
@@ -221,6 +315,7 @@ Mã `liveness_reasons` (FE ánh xạ sang câu tiếng Việt):
 | GET | `/places` | xem bên dưới | `Page<Place>` |
 | GET | `/places/{id}` | — | `Place` |
 | POST | `/places/{id}/reverify` | — | `Place` (đặt lại `pending` để worker quét lại) |
+| PATCH | `/places/{id}/contact` | `{ status, note? }` — `note` null = giữ nguyên, "" = xoá | `Place` |
 | GET | `/places/countries` | — | `[{ code, name, count }]` — chỉ những nước CÓ dữ liệu, count giảm dần |
 | GET | `/places/events` | `token` | SSE — xem bên dưới |
 | GET | `/places/export` | như `/places` + `format` + `token` | file tải về |
@@ -229,10 +324,14 @@ Mã `liveness_reasons` (FE ánh xạ sang câu tiếng Việt):
 
 ```
 event: places
-data: { "total": 1234, "max_id": 9876, "last_change": "2026-09-23T04:56:25Z" }
+data: { "max_id": 9876, "last_change": "2026-09-23T04:56:25Z" }
 ```
 
-Gói tin CỐ Ý không chứa dòng dữ liệu nào — bảng đang lọc/sắp/phân trang nên chỉ
+Gói tin CỐ Ý không chứa `total` lẫn dòng dữ liệu nào. Bỏ `total` vì `count(*)`
+ép Postgres quét toàn bảng (70 ms ở 300k dòng) cho một con số giao diện không
+đọc tới — nó chỉ dùng gói tin làm tín hiệu "có thay đổi" rồi tự nạp lại danh sách.
+
+Gói tin cũng không chứa dòng dữ liệu nào — bảng đang lọc/sắp/phân trang nên chỉ
 server mới biết trang hiện tại gồm những dòng nào. Giao diện nhận tin rồi tự nạp
 lại danh sách. Nhịp bám theo worker: 2 giây khi đang quét, 10 giây khi rảnh (chỉ
 worker mới ghi vào bảng places, worker rảnh thì dữ liệu không thể đổi).
@@ -244,7 +343,9 @@ Query lọc dùng chung cho `/places` và `/places/export`:
 ```
 q                 tìm trong tên + địa chỉ (không dấu cũng khớp)
 job_id            chỉ địa điểm của job này
-keyword           đúng một từ khoá đã tìm ra nó
+keyword           đúng một LƯỢT TÌM đã ra nó — cả chuỗi "<từ khoá> <địa điểm>"
+country           mã ISO alpha-2 (TH, VN...), không phân biệt hoa thường
+contact_status    new | called | interested | rejected
 liveness          ACTIVE | SUSPECT | DEAD   (lặp được: ?liveness=ACTIVE&liveness=SUSPECT)
 business_status   OPERATIONAL | CLOSED_TEMPORARILY | CLOSED_PERMANENTLY
 has_phone         true | false
@@ -392,6 +493,9 @@ type CountryKeywords = {
 | GET | `/keywords/status` | — | `{ ai_available: boolean }` |
 | POST | `/keywords/plan` | `{ keywords, locations?, countries? }` | `{ total, home, cached, need, limit, over_limit, ai_available }` |
 | POST | `/keywords/localize` | `{ keywords, locations?, countries? }` | `{ items: CountryKeywords[], ai_available, warning }` |
+| GET | `/keywords/sets` | — | `KeywordSet[]` — bộ từ khoá đã lưu, mới cập nhật trước |
+| POST | `/keywords/sets` | `{ name, keywords }` | `KeywordSet` — trùng tên thì GHI ĐÈ (không phân biệt hoa thường) |
+| DELETE | `/keywords/sets/{id}` | — | `{ deleted: true }` — CHỈ xoá bộ, giữ nguyên bản dịch |
 | POST | `/keywords/save` | `{ keywords, country_code, language, translated }` | `{ saved: true }` |
 
 `/keywords/plan` và `/keywords/localize` suy ra danh sách quốc gia từ `locations`
@@ -412,6 +516,22 @@ dịch lưu sẵn thì chỉ còn 10 nước cần gọi AI.
 | `cache` | Lấy từ bộ nhớ đệm của lần trước |
 | `user` | Bản người dùng đã sửa tay, AI không ghi đè |
 | `fallback` | Không dịch được → tạm dùng từ khoá gốc, xem `warning` |
+
+```
+KeywordSet = {
+  id, name, keywords: string[]
+  // Mã ISO alpha-2 các nước ĐÃ có bản dịch sẵn cho ĐÚNG bộ này.
+  // Chọn nước nằm trong đây -> KHÔNG tốn lượt gọi AI.
+  translated_countries: string[]
+  created_at, updated_at
+}
+```
+
+Vì sao cần lưu bộ từ khoá khi đã có bộ nhớ đệm: khoá đệm là hàm băm của chính bộ
+từ khoá. Nó BỀN với đảo thứ tự, hoa/thường và khoảng trắng thừa, nhưng VỠ khi
+thiếu một từ hoặc sai một chữ — lúc đó AI bị gọi lại cho MỌI nước. Người dùng
+không thể gõ lại chính xác một bộ mười từ khoá sau vài tuần, nên `keyword_sets`
+giữ nguyên văn để chọn lại là trúng đệm 100%.
 
 **Endpoint này không bao giờ trả lỗi vì AI.** Chưa cấu hình khoá, sai khoá hay quá hạn
 mức đều trả về từ khoá gốc kèm `warning`; người dùng vẫn tạo job được như thường.

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.exceptions import AppError, NotFoundError
 from app.core.pagination import Page, PageParams
 from app.modules.geo import service as geo
+from app.modules.scraper.job import subdivide
 from app.modules.scraper.job.entity import (
     JOB_CANCELLED,
     JOB_PAUSED,
@@ -16,11 +19,13 @@ from app.modules.scraper.job.entity import (
     ScrapeJob,
 )
 from app.modules.scraper.job.repository import CAN_HANH_DONG, JobRepository
-from app.modules.scraper.job.request import JobCreateRequest
+from app.modules.scraper.job.request import JobCreateRequest, RemainingSplitRequest
 from app.modules.scraper.job.response import (
     JobDetailResponse,
     JobResponse,
     RemainingAreaResponse,
+    SplitPlanItemResponse,
+    SplitPlanResponse,
 )
 
 
@@ -143,6 +148,70 @@ class JobService:
             )
         rows, total = self.repo.list_remaining_areas(params, stop_reason)
         return Page.build([RemainingAreaResponse.of(r) for r in rows], params, total)
+
+    # ----- chia nhỏ địa bàn còn sót -----
+    def _ke_hoach(self, queries: list[str]) -> subdivide.KeHoachChiaNho:
+        return subdivide.lap_ke_hoach(queries, self.repo.latest_runs_for(queries))
+
+    def plan_split(self, payload: RemainingSplitRequest) -> SplitPlanResponse:
+        ke_hoach = self._ke_hoach(payload.queries)
+        so_truy_van = len(ke_hoach.truy_van)
+        return SplitPlanResponse(
+            items=[SplitPlanItemResponse.of(m) for m in ke_hoach.muc],
+            total_queries=so_truy_van,
+            skipped=sum(1 for m in ke_hoach.muc if m.so_truy_van == 0),
+            estimated_minutes=subdivide.so_phut_uoc_tinh(so_truy_van),
+        )
+
+    def create_split(self, payload: RemainingSplitRequest) -> JobResponse:
+        """Tạo job từ các dòng đang chọn — cùng một bản kế hoạch với xem trước."""
+        ke_hoach = self._ke_hoach(payload.queries)
+        if not ke_hoach.truy_van:
+            raise AppError(
+                "Không sinh được truy vấn nào từ các dòng đã chọn. Xem cột lý do ở "
+                "bản xem trước để biết vì sao.",
+                code="VALIDATION_ERROR",
+                status_code=422,
+            )
+
+        ten = (payload.name or "").strip() or self._ten_mac_dinh()
+        # Dựng `params` qua chính JobCreateRequest để job này có cùng hình dạng
+        # với job tạo bằng tay — giao diện đọc `params` theo đúng một kiểu.
+        #
+        # `skip_recent_queries = False` là điều kiện SỐNG CÒN chứ không phải một
+        # lựa chọn: `CO_THE_BO_QUA` trong repository có cả `cut_off`, nên để mặc
+        # định True thì chính những truy vấn vừa sinh ra ở đây bị bỏ qua sạch, job
+        # chạy xong trong vài giây mà không quét gì.
+        params = JobCreateRequest(
+            name=ten,
+            keywords=ke_hoach.tu_khoa,
+            locations=ke_hoach.dia_diem,
+            max_results_per_query=payload.max_results_per_query,
+            skip_recent_queries=False,
+        )
+        job = self.repo.add(
+            ScrapeJob(
+                name=ten,
+                status=JOB_QUEUED,
+                phase="idle",
+                params=params.model_dump(),
+                total_queries=len(ke_hoach.truy_van),
+            )
+        )
+        self.repo.add_queries(
+            job.id,
+            [ExpandedQuery(query=t.query, hl=t.hl, gl=t.gl) for t in ke_hoach.truy_van],
+        )
+        self.db.commit()
+        self.db.refresh(job)
+        return JobResponse.of(job, rate_per_min(job))
+
+    @staticmethod
+    def _ten_mac_dinh() -> str:
+        """Tên gợi nhớ theo giờ ĐỊA PHƯƠNG: người dùng đối chiếu với đồng hồ trên
+        tường chứ không với UTC."""
+        gio = datetime.now(ZoneInfo(get_settings().timezone))
+        return f"Chia nhỏ địa bàn còn sót {gio:%d/%m %H:%M}"
 
     # ----- đổi trạng thái -----
     def _transition(self, job_id: int, target: str, allowed_from: tuple[str, ...]) -> JobResponse:
