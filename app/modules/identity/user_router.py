@@ -97,3 +97,18 @@ def set_password(
     """KHÔNG hỏi mật khẩu cũ — người quên mật khẩu thì không có cái cũ để đưa."""
     UserService(db).set_password(user_id, payload.new_password)
     return ApiResponse.ok({"updated": True})
+
+
+@router.post(
+    "/{user_id}/unlock",
+    response_model=ApiResponse[UserResponse],
+    summary="Mở khoá tài khoản bị chặn do nhập sai mật khẩu",
+)
+def unlock_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+) -> ApiResponse[UserResponse]:
+    """Chỉ xoá khoá TẠM. Tài khoản bị quản trị khoá hẳn (`is_active=false`) thì
+    phải mở bằng `PATCH /users/{id}` — hai việc khác nhau, không gộp."""
+    return ApiResponse.ok(UserResponse.of(UserService(db).unlock(user_id)))

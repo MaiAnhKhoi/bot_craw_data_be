@@ -11,6 +11,7 @@ from app.core.exceptions import AppError, NotFoundError
 from app.core.pagination import Page, PageParams
 from app.core.security import hash_password, verify_password
 from app.modules.identity.entity import User
+from app.modules.identity.lockout import LockoutGuard
 from app.modules.identity.repository import UserRepository
 
 VAI_TRO = ("admin", "sale")
@@ -152,3 +153,19 @@ class UserService:
             )
         user.password_hash = hash_password(_kiem_mat_khau(new_password))
         self.db.commit()
+
+    def unlock(self, user_id: int) -> User:
+        """Quản trị mở khoá ngay, không đợi hết 15 phút.
+
+        Có nút này vì 15 phút là rất lâu khi sale đang cần gọi khách. Nhưng KHÔNG
+        bỏ hẳn cơ chế tự hết hạn: nó là van an toàn cho chính quản trị — tự gõ
+        sai mật khẩu của mình thì vẫn vào lại được sau 15 phút mà không phải nhờ
+        ai, và cũng không cần chui vào Docker gõ SQL.
+        """
+        user = self.repo.by_id(user_id)
+        if user is None:
+            raise NotFoundError(f"Không tìm thấy tài khoản {user_id}")
+        LockoutGuard(self.db).mo_khoa(user)
+        self.db.commit()
+        self.db.refresh(user)
+        return user

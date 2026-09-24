@@ -30,6 +30,26 @@ class Settings(BaseSettings):
     admin_username: str = "admin"
     admin_password: str = "admin12345"   # chỉ dùng để tạo tài khoản đầu tiên
 
+    # --- khoá tạm khi nhập sai mật khẩu nhiều lần ---
+    #
+    # Đo thật trên hệ thống này: bcrypt đã làm chậm sẵn còn ~20 lần thử mỗi giây.
+    # Mật khẩu ngẫu nhiên 8 ký tự thường cần ~325 năm nên vốn đã an toàn — nhưng
+    # mật khẩu kiểu `sale2026`, `Ago@2026` nằm trong vài nghìn cái phổ biến đầu
+    # tiên, tức là rụng trong DƯỚI 5 PHÚT. Nhân viên sẽ đặt đúng kiểu đó.
+    #
+    # Khoá 15 phút kéo 20 lần/giây xuống còn ~20 lần mỗi 15 phút — chậm hơn
+    # 900 lần, đủ để mật khẩu yếu cũng thành không dò nổi.
+    login_max_attempts: int = 5
+    # Ngưỡng theo IP cao hơn hẳn ngưỡng theo tài khoản: một văn phòng dùng chung
+    # một IP ra Internet, mà 10 sale gõ nhầm rải rác trong ngày là chuyện thường.
+    # Đặt thấp là cả phòng bị khoá vì vài người đãng trí.
+    login_ip_max_attempts: int = 20
+    # Ngắn có chủ đích. Khoá dài hơn chẳng chặn thêm được gì đáng kể (900 lần đã
+    # quá đủ) nhưng biến mọi lần gõ nhầm thành nửa buổi không làm việc được. Nó
+    # cũng là van an toàn: quản trị tự khoá mình vẫn vào lại được sau 15 phút mà
+    # không cần nhờ ai.
+    login_lock_minutes: int = 15
+
     # --- trình duyệt ---
     browser_engine: str = "playwright"        # playwright | patchright
     headless: bool = True

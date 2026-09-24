@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.deps import current_user
-from app.core.exceptions import UnauthorizedError
+from app.core.exceptions import AppError, UnauthorizedError
 from app.core.response import ApiResponse
 from app.core.security import create_access_token, verify_password
 from app.modules.identity.entity import User
+from app.modules.identity.lockout import LockoutGuard, dia_chi_that
 from app.modules.identity.repository import UserRepository
 from app.modules.identity.response import UserResponse
 from app.modules.identity.service import UserService
@@ -30,13 +31,38 @@ class LoginResponse(BaseModel):
 
 
 @router.post("/login", response_model=ApiResponse[LoginResponse], summary="Đăng nhập")
-def login(payload: LoginRequest, db: Session = Depends(get_db)) -> ApiResponse[LoginResponse]:
+def login(
+    payload: LoginRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ApiResponse[LoginResponse]:
     user = UserRepository(db).by_username(payload.username)
+    guard = LockoutGuard(db)
+    ip = dia_chi_that(request)
+
+    # Kiểm khoá TRƯỚC khi so mật khẩu — và trả 429 chứ không 401.
+    #
+    # 401 ở đây sẽ khiến người gõ ĐÚNG mật khẩu tưởng mình gõ sai, thử lại liên
+    # tục, và mỗi lần thử lại kéo dài thêm thời gian khoá. Thông báo phải nói rõ
+    # còn bao nhiêu phút thì họ mới chịu dừng tay.
+    if (phut := guard.phut_con_khoa(user, ip)) > 0:
+        raise AppError(
+            f"Đăng nhập sai quá nhiều lần. Thử lại sau {phut} phút, "
+            "hoặc nhờ quản trị viên mở khoá.",
+            code="TOO_MANY_ATTEMPTS",
+            status_code=429,
+        )
+
     if user is None or not verify_password(payload.password, user.password_hash):
+        guard.ghi_that_bai(user, ip)
+        db.commit()
         # Cùng một thông báo cho cả hai trường hợp: không tiết lộ tài khoản nào tồn tại.
         raise UnauthorizedError("Sai tên đăng nhập hoặc mật khẩu")
     if not user.is_active:
         raise UnauthorizedError("Tài khoản đã bị khoá")
+
+    guard.ghi_thanh_cong(user, ip)
+    db.commit()
     token, expires_in = create_access_token(user.username)
     return ApiResponse.ok(
         LoginResponse(access_token=token, expires_in=expires_in, user=UserResponse.of(user))
