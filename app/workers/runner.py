@@ -269,6 +269,21 @@ class Runner:
             # job. Rỗng -> không lọc gì, ghi hết.
             cho_phep = (params.get("category_map") or {}).get((query_gl or "").upper()) or []
 
+            # Chế độ `never` không mở trang chi tiết nào, nên thẻ là nguồn DUY NHẤT
+            # biết được số điện thoại — chặn ngay tại đây mới có tác dụng. Hai chế
+            # độ kia cố ý KHÔNG chặn ở bước này: 119/203 địa điểm chỉ lộ số sau
+            # khi mở trang, bỏ sớm là vứt oan đúng chừng đó lead.
+            # `cards` KHÔNG được đụng tới: `results_found` ở dưới phải đếm đúng
+            # thứ GOOGLE trả về. Trừ đi phần mình tự bỏ sẽ làm một tỉnh đã bị
+            # Google cắt trông như chưa đầy, và nó biến mất khỏi danh sách địa
+            # bàn còn sót.
+            de_cham = cards
+            if (
+                params.get("require_phone", True)
+                and params.get("detail_mode", "missing_only") == "never"
+            ):
+                de_cham = [c for c in cards if (c.phone_raw or "").strip()]
+
             # Bước 1: chấm bằng luật cứng, tách riêng những thẻ luật không quyết nổi.
             #
             # Làm thành ba bước chứ không ghi thẳng trong một vòng, vì bước 2 gọi
@@ -276,7 +291,7 @@ class Runner:
             # 20 lần chờ mạng chen vào giữa lúc quét.
             chac_chan: list[tuple[CardResult, str | None]] = []
             ranh_gioi: list[CardResult] = []
-            for card in cards:
+            for card in de_cham:
                 diem = cham_lien_quan(card.category, card.name, cho_phep)
                 if diem == RANH_GIOI:
                     ranh_gioi.append(card)
@@ -434,9 +449,14 @@ class Runner:
             try:
                 target = db.get(Place, place_id)
                 if target is not None:
-                    PlaceWriter(db, region).apply_detail(
+                    writer = PlaceWriter(db, region)
+                    writer.apply_detail(
                         target, detail, cho_phep=_danh_muc_cua(params, target)
                     )
+                    # Giờ mới biết có số hay không — đây là lần đầu tiên biết
+                    # được, vì trang chi tiết là nơi 119/203 địa điểm lộ số.
+                    if params.get("require_phone", True):
+                        writer.bo_vi_thieu_sdt(target, job_id, name)
             finally:
                 db.close()
 

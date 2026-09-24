@@ -38,6 +38,15 @@ class JobCreateRequest(BaseModel):
             "này; vẫn không có thì KHÔNG lọc gì cho quốc gia đó."
         ),
     )
+    require_phone: bool = Field(
+        True,
+        description=(
+            "Địa điểm không có số điện thoại thì KHÔNG giữ lại. "
+            "Kiểm SAU pha chi tiết chứ không phải lúc đọc thẻ: đo thật thì 119/203 "
+            "địa điểm chỉ lộ số sau khi mở trang chi tiết, chặn sớm là vứt oan chúng. "
+            "Riêng chế độ `detail_mode=never` không mở trang nào nên chặn ngay ở thẻ."
+        ),
+    )
     ttl_days: int = Field(90, ge=0, le=3650, description="Bỏ qua địa điểm đã quét trong ngần này ngày")
     skip_recent_queries: bool = Field(
         True,

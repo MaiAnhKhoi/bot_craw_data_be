@@ -446,3 +446,55 @@ def test_dia_diem_dong_cua_vinh_vien_thi_khong_mo_lai_hang_doi(job_trong):
     writer.finish_without_detail(p)
     lai, _ = writer.upsert_from_card(the, job.id, "kw2", country_code="IN", cho_phep=NGANH_IN)
     assert lai.status == PLACE_DONE
+
+
+# ------------------------------------------- bắt buộc có số điện thoại
+
+
+def test_khong_co_sdt_thi_bi_xoa_va_de_lai_vet(job_trong):
+    """Số điện thoại là thứ DUY NHẤT dùng được ở đây — không có thì không gọi được.
+
+    Xoá chứ không ẩn, vì người dùng yêu cầu rõ "không cần ghi vào dữ liệu".
+    Nhưng không được mất dấu: một dòng `place_rejects` giữ tên, ngành nghề,
+    truy vấn và link Maps, đủ để soi lại hoặc quét tay.
+    """
+    from sqlalchemy import func, select as sel
+
+    db, job = job_trong
+    writer = PlaceWriter(db, "IN")
+    p, _ = writer.upsert_from_card(
+        _the(job.id, "khongsdt", "AR FRUIT SHOP", "Fruit and vegetable store"),
+        job.id, "kw", country_code="IN", cho_phep=NGANH_IN,
+    )
+    assert p is not None and p.phone_e164 is None
+    pid = p.id
+
+    assert writer.bo_vi_thieu_sdt(p, job.id, "kw") is True
+    assert db.get(Place, pid) is None
+
+    vet = db.execute(sel(PlaceReject).where(PlaceReject.job_id == job.id)).scalars().all()
+    assert [v.reason for v in vet] == ["Không có số điện thoại"]
+    assert vet[0].name == "AR FRUIT SHOP"
+    assert db.get(ScrapeJob, job.id).rejected_count == 1
+    # Bộ đếm của job đếm lại từ DB nên không hỏng theo.
+    assert db.execute(sel(func.count()).select_from(Place).where(Place.id == pid)).scalar_one() == 0
+
+
+def test_co_sdt_thi_khong_dung_toi(job_trong):
+    """Địa điểm đã có số KHÔNG BAO GIỜ rơi vào nhánh xoá.
+
+    Nhờ vậy một job sau không thể xoá mất lead mà job trước đã lấy được số.
+    """
+    from app.modules.scraper.engine.models import CardResult
+
+    db, job = job_trong
+    writer = PlaceWriter(db, "IN")
+    the = CardResult(
+        name="AR FRUIT SHOP", maps_url="https://maps/sdt", feature_id=f"test-{job.id}-sdt",
+        category="Fruit and vegetable store", phone_raw="+91 99332 93338",
+    )
+    p, _ = writer.upsert_from_card(the, job.id, "kw", country_code="IN", cho_phep=NGANH_IN)
+    assert p.phone_e164 == "+919933293338"
+    assert writer.bo_vi_thieu_sdt(p, job.id, "kw") is False
+    assert db.get(Place, p.id) is not None
+    assert db.get(ScrapeJob, job.id).rejected_count == 0
