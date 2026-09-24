@@ -70,12 +70,43 @@ def test_nuoc_da_co_ban_dich_khong_tinh_vao_tran(monkeypatch):
     monkeypatch.setattr(
         KeywordService,
         "_cached",
-        lambda self, digest, asked: {c: object() for c in asked if c in da_co},
+        lambda self, digest, asked: {c: DongDem(["Fruit wholesaler"]) for c in asked if c in da_co},
     )
     plan = KeywordService(None).plan(["k"], _quoc_gia(*codes))
     assert len(plan["cached"]) == 10
     assert len(plan["need"]) == limit - 5
     assert plan["over_limit"] is False
+
+
+class DongDem:
+    """Một dòng trong bộ nhớ đệm, rút gọn còn đúng thứ `plan` nhìn tới."""
+
+    def __init__(self, categories: list[str]) -> None:
+        self.categories = categories
+
+
+def test_ban_dich_cu_thieu_danh_muc_nganh_nghe_van_phai_goi_lai_ai(monkeypatch):
+    """Có từ khoá nhưng RỖNG danh mục ngành nghề thì KHÔNG tính là đã có.
+
+    Mọi bản dịch sinh ra trước khi có bộ lọc ngành đều ở trạng thái này. Tính
+    chúng là "đã đủ" thì job chạy mà không lọc gì — đúng cái lỗi vừa phải sửa
+    (tiệm bánh kem lẫn vào công ty trái cây) — và lần này nó hỏng IM LẶNG, vì
+    giao diện báo "đã có bản dịch, không tốn token" nên không ai đi kiểm.
+
+    Nhầm về phía gọi lại AI thì mất ít token. Nhầm về phía bỏ qua thì cả lượt
+    quét ra dữ liệu bẩn mà không có dấu hiệu nào.
+    """
+    monkeypatch.setattr(
+        KeywordService,
+        "_cached",
+        lambda self, digest, asked: {
+            "TH": DongDem(["Fruit wholesaler"]),   # đủ dùng
+            "JP": DongDem([]),                     # bản dịch cũ, thiếu danh mục
+        },
+    )
+    plan = KeywordService(None).plan(["k"], _quoc_gia("TH", "JP", "KR"))
+    assert plan["cached"] == ["TH"]
+    assert plan["need"] == ["JP", "KR"]
 
 
 def test_khong_co_tu_khoa_thi_khong_chan(service):

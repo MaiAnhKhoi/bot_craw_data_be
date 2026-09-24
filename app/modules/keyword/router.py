@@ -38,6 +38,12 @@ class CountryKeywords(BaseModel):
     country_name: str
     language: str
     keywords: list[str]
+    # Dùng cho việc NGƯỢC với `keywords`: `keywords` để đi tìm, `categories` để
+    # loại kết quả lạc đề sau khi tìm. Rỗng nghĩa là KHÔNG lọc gì — mọi thứ
+    # Google trả về đều được ghi, kể cả tiệm bánh kem.
+    categories: list[str] = Field(
+        default_factory=list, description="Tên ngành nghề Google Maps được phép giữ"
+    )
     source: str = Field(description="ai | cache | user | original | fallback")
 
 
@@ -52,6 +58,10 @@ class SaveRequest(BaseModel):
     country_code: str
     language: str = "en"
     translated: list[str]
+    # Bỏ trống (None) = lần lưu này không nói gì về danh mục, giữ nguyên cái đang
+    # có. Gửi `[]` mới là cố ý xoá sạch. Hai ca này phải khác nhau, nếu không mọi
+    # lần sửa từ khoá sẽ âm thầm tắt bộ lọc ngành nghề.
+    categories: list[str] | None = None
 
 
 def _countries_of(payload: LocalizeRequest) -> list[dict]:
@@ -214,6 +224,9 @@ def save(
         normalize(payload.translated),
         model=None,
         edited=True,
+        categories=(
+            None if payload.categories is None else normalize(payload.categories)
+        ),
     )
     db.commit()
     return ApiResponse.ok({"saved": True})

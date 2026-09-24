@@ -40,6 +40,10 @@ class JobResponse(BaseModel):
     failed_places: int
     new_places: int
     blocked_count: int
+    # Số thẻ bị loại NGAY lúc ghi vì ngành nghề ngoài danh mục đã khai.
+    # Phải hiện ra được: một job loại 96/174 kết quả mà im lặng thì không
+    # ai biết bộ lọc đang siết quá tay cho tới lúc thiếu lead để gọi.
+    rejected_count: int
     rate_per_min: float | None = None
     started_at: datetime | None
     finished_at: datetime | None
@@ -54,9 +58,40 @@ class JobResponse(BaseModel):
             total_queries=job.total_queries, done_queries=job.done_queries,
             total_places=job.total_places, done_places=job.done_places,
             failed_places=job.failed_places, new_places=job.new_places,
-            blocked_count=job.blocked_count, rate_per_min=rate_per_min,
+            blocked_count=job.blocked_count, rejected_count=job.rejected_count,
+            rate_per_min=rate_per_min,
             started_at=job.started_at, finished_at=job.finished_at, last_error=job.last_error,
             created_at=job.created_at, updated_at=job.updated_at,
+        )
+
+
+class PlaceRejectResponse(BaseModel):
+    """Một thẻ kết quả đã bị loại vì ngoài danh mục ngành nghề.
+
+    Màn này tồn tại để người dùng TỰ KIỂM bộ lọc. Danh mục ngành nghề là phỏng
+    đoán do AI sinh ra rồi người dùng sửa tay; không có chỗ soi lại thì một nhãn
+    bị thiếu sẽ âm thầm vứt đi cả một loại doanh nghiệp thật mà không ai biết.
+    """
+
+    id: int
+    query: str
+    name: str
+    category: str | None
+    maps_url: str | None
+    # Ai đã loại dòng này: `rule` = luật cứng so nhãn ngành nghề với danh mục,
+    # `ai` = AI nhìn tên + nhãn + địa chỉ rồi phán. Hai thứ có độ tin cậy khác
+    # nhau, và khi bộ lọc siết quá tay thì đây là chỗ biết nên sửa danh mục hay
+    # sửa prompt.
+    source: str | None
+    reason: str | None
+    created_at: datetime
+
+    @classmethod
+    def of(cls, r) -> PlaceRejectResponse:  # noqa: ANN001 — PlaceReject
+        return cls(
+            id=r.id, query=r.query, name=r.name, category=r.category,
+            maps_url=r.maps_url, source=r.source, reason=r.reason,
+            created_at=r.created_at,
         )
 
 

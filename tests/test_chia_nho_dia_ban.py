@@ -481,7 +481,7 @@ class RepoGia:
         # phải tự điền, nếu không `JobResponse` ném lỗi ép kiểu chứ không phải lỗi thật.
         job.id = 1
         for cot in ("done_queries", "total_places", "done_places", "failed_places",
-                    "new_places", "blocked_count"):
+                    "new_places", "blocked_count", "rejected_count"):
             setattr(job, cot, 0)
         job.created_at = job.updated_at = datetime(2026, 9, 23, tzinfo=UTC)
         self.job = job

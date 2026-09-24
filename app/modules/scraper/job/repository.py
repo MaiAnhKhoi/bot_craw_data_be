@@ -137,6 +137,31 @@ class JobRepository:
         )
         return list(rows), total
 
+    def list_rejects(self, job_id: int, params: PageParams) -> tuple[list, int]:
+        """Các thẻ đã bị loại của một job, mới nhất trước.
+
+        Sắp theo `id` giảm dần chứ không theo `created_at`: worker ghi nhiều dòng
+        trong cùng một giây nên mốc thời gian trùng nhau hàng loạt, và thứ tự sẽ
+        nhảy loạn giữa các trang.
+        """
+        from app.modules.scraper.place.reject import PlaceReject
+
+        tong = int(
+            self.db.execute(
+                select(func.count(PlaceReject.id)).where(PlaceReject.job_id == job_id)
+            ).scalar_one()
+        )
+        rows = list(
+            self.db.execute(
+                select(PlaceReject)
+                .where(PlaceReject.job_id == job_id)
+                .order_by(PlaceReject.id.desc())
+                .offset(params.offset)
+                .limit(params.size)
+            ).scalars().all()
+        )
+        return rows, tong
+
     def list_remaining_areas(
         self, params: PageParams, stop_reason: str | None = None
     ) -> tuple[list, int]:

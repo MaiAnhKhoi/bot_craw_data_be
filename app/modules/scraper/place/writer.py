@@ -8,13 +8,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.modules.geo import borders
 from app.modules.geo import service as geo
 from app.modules.scraper.engine.models import CardResult, DetailResult
 from app.modules.scraper.engine.normalize import normalize_phone
+from app.modules.scraper.job.entity import ScrapeJob
 from app.modules.scraper.place.entity import (
     BUSINESS_CLOSED_PERM,
     PLACE_DONE,
@@ -24,6 +25,10 @@ from app.modules.scraper.place.entity import (
     Place,
     PlaceKeyword,
 )
+from app.modules.scraper.place.reject import PlaceReject
+from app.modules.scraper.place.relevance import NGHI_RAC
+from app.modules.scraper.place.relevance import cham as cham_lien_quan
+from app.modules.scraper.place.relevance import gop as gop_lien_quan
 from app.modules.scraper.place.service import build_search_text, recompute_liveness
 
 
@@ -163,6 +168,39 @@ def needs_detail(place: Place, detail_mode: str, enrich_website: bool, ttl_days:
     # công ty ngừng hoạt động trở thành vô nghĩa.
     return True
 
+def danh_muc_cho_place(db: Session, place: Place) -> list[str]:
+    """Danh mục ngành nghề áp cho một địa điểm khi KHÔNG có params của job.
+
+    Pha "kiểm tra lại" chạy ngoài mọi job nên không có `category_map` trong tay,
+    nhưng nó vẫn ghi đè `place.category` bằng nhãn của trang chi tiết. Không tra
+    được danh mục thì kết luận cũ nằm lại trên một cái nhãn không còn tồn tại —
+    đúng lỗi đã gặp với "Fruit and vegetable wholesaler".
+
+    Thứ tự: job gần nhất đã tìm ra nó (đúng bộ từ khoá nhất) -> bản dịch đã lưu
+    cho quốc gia đó. Không có gì thì trả rỗng, và `cham` sẽ trả None = để nguyên.
+    """
+    ma = (place.country_code or "").upper()
+    if not ma:
+        return []
+    from app.modules.keyword.entity import KeywordTranslation
+
+    job_params = db.execute(
+        select(ScrapeJob.params)
+        .join(JobPlace, JobPlace.job_id == ScrapeJob.id)
+        .where(JobPlace.place_id == place.id)
+        .order_by(ScrapeJob.id.desc())
+    ).scalars().all()
+    for params in job_params:
+        ds = ((params or {}).get("category_map") or {}).get(ma)
+        if ds:
+            return list(ds)
+
+    row = db.execute(
+        select(KeywordTranslation)
+        .where(KeywordTranslation.country_code == ma)
+        .order_by(KeywordTranslation.id.desc())
+    ).scalars().first()
+    return list(row.categories or []) if row else []
 
 class PlaceWriter:
     def __init__(self, db: Session, region: str = "VN") -> None:
@@ -173,11 +211,39 @@ class PlaceWriter:
 
     # ----- pha tìm kiếm -----
     def upsert_from_card(
-        self, card: CardResult, job_id: int, keyword: str, country_code: str | None = None
-    ) -> tuple[Place, bool]:
-        """Tạo mới hoặc làm tươi một địa điểm từ thẻ kết quả. Trả (place, có phải mới không).
+        self,
+        card: CardResult,
+        job_id: int,
+        keyword: str,
+        country_code: str | None = None,
+        cho_phep: list[str] | None = None,
+        diem: str | None = None,
+        nguon: str | None = None,
+        ly_do: str | None = None,
+    ) -> tuple[Place | None, bool]:
+        """Tạo mới hoặc làm tươi một địa điểm từ thẻ kết quả.
+
+        Trả `(None, False)` khi thẻ bị LOẠI vì ngoài danh mục ngành nghề — nơi gọi
+        phải chịu được giá trị None này.
 
         `country_code` là quốc gia của TRUY VẤN đã tìm ra thẻ này (`JobQuery.gl`).
+        `cho_phep` là danh mục ngành nghề của chính quốc gia đó; rỗng thì không lọc.
+
+        `diem`/`nguon`/`ly_do` là quyết định đã có sẵn từ bên ngoài — dùng cho
+        những thẻ vừa được AI phân xử. Truyền vào thì hàm này KHÔNG chấm lại:
+        chấm hai lần với hai căn cứ khác nhau là cách chắc chắn nhất để `relevance`
+        lưu một đằng còn `relevance_reason` giải thích một nẻo.
+
+        Vì sao chặn ở ĐÂY chứ không lọc lúc đọc: Google độn thêm kết quả loãng dần
+        khi hết kết quả khớp thật (đo được: 90% đúng ngành ở vị trí 1–20, còn 11%
+        ở vị trí 101–118). Để chúng vào bảng rồi mới ẩn đi nghĩa là mọi câu đếm,
+        mọi lần xuất file và mọi người sau này đọc bảng đều phải nhớ áp bộ lọc —
+        quên một chỗ là rác lọt ra ngoài.
+
+        Chặn KHÔNG IM LẶNG: mỗi thẻ bị loại để lại một dòng ở `place_rejects`
+        (tên, ngành nghề, truy vấn) và được đếm vào `ScrapeJob.rejected_count`.
+        Danh mục ngành nghề là phỏng đoán, nên phải có đường soi lại xem nó có
+        đang siết quá tay không.
         """
         if not card.feature_id:
             # Không có định danh của Google thì không có cách khử trùng lặp đáng tin;
@@ -186,11 +252,53 @@ class PlaceWriter:
         else:
             key = card.feature_id
 
+        if diem is None:
+            diem = cham_lien_quan(card.category, card.name, cho_phep)
+            nguon = "rule" if diem is not None else None
+
         place = self.db.execute(select(Place).where(Place.feature_id == key)).scalar_one_or_none()
         is_new = place is None
         if place is None:
+            if diem == NGHI_RAC:
+                self._ghi_loai(job_id, keyword, key, card, nguon, ly_do)
+                return None, False
             place = Place(feature_id=key, name=card.name, status=PLACE_PENDING)
             self.db.add(place)
+        # Địa điểm ĐÃ CÓ trong bảng thì không loại, kể cả khi lượt này chấm là lạc
+        # đề: nó đã lọt lưới của một job khác với danh mục khác, và xoá đi ở đây
+        # là để job này quyết định thay cho job kia. Chỉ ghi nhận điểm.
+        # Địa điểm đã `done` nhưng CHƯA từng mở trang chi tiết thì mở lại hàng đợi.
+        #
+        # Có đúng một đường sinh ra trạng thái đó: job bị HUỶ giữa chừng, và
+        # `close_pending_of_job` chốt sổ những địa điểm còn dang dở bằng dữ liệu
+        # của thẻ kết quả. Nếu không mở lại ở đây thì job sau nhặt đúng địa điểm
+        # ấy, thấy nó đã `done`, và pha chi tiết bỏ qua — nó nằm lại VĨNH VIỄN
+        # với địa chỉ rỗng và không có website, không lỗi, không dấu hiệu gì.
+        #
+        # Đã đo: huỷ job #2 giữa chừng rồi chạy job #7 trên cùng địa bàn, 6 địa
+        # điểm ở trạng thái `done` / `detail_scraped=false` / `attempts=0` —
+        # trông y hệt như đã quét xong.
+        #
+        # Không đụng tới địa điểm Google đã khẳng định đóng cửa vĩnh viễn:
+        # `needs_detail` cố ý không mở chúng, mở lại hàng đợi chỉ tạo ra một vòng
+        # quẩn pending -> done mỗi lần chạy.
+        if (
+            not is_new
+            and place.status == PLACE_DONE
+            and not place.detail_scraped
+            and place.business_status != BUSINESS_CLOSED_PERM
+        ):
+            place.status = PLACE_PENDING
+
+        truoc = place.relevance
+        place.relevance = gop_lien_quan(truoc, diem)
+        # Lý do chỉ đi kèm ĐÚNG cái điểm đã sinh ra nó. `gop` có thể giữ lại điểm
+        # cũ (luật "chỉ nâng, không hạ"), và khi đó ghi đè lý do bằng lời giải
+        # thích của lượt này là dán một câu giải thích lên một kết luận khác —
+        # người đọc sau sẽ tin vào một thứ không hề đúng.
+        if place.relevance != truoc or place.relevance_source is None:
+            place.relevance_source = nguon
+            place.relevance_reason = ly_do
 
         place.name = place.name or card.name
         place.cid = place.cid or card.cid
@@ -255,6 +363,40 @@ class PlaceWriter:
         self.db.commit()
         return place, is_new
 
+    def _ghi_loai(
+        self,
+        job_id: int,
+        keyword: str,
+        key: str,
+        card: CardResult,
+        nguon: str | None = None,
+        ly_do: str | None = None,
+    ) -> None:
+        """Ghi vết một thẻ bị loại, rồi commit ngay như đường ghi địa điểm.
+
+        Cố ý KHÔNG khử trùng lặp: cùng một tiệm bánh bị loại ở ba truy vấn khác
+        nhau thì ba dòng đó chính là bằng chứng bộ lọc đang chặn đúng cùng một
+        thứ nhiều lần, không phải dữ liệu thừa.
+        """
+        self.db.add(
+            PlaceReject(
+                job_id=job_id,
+                query=keyword[:300],
+                feature_id=(card.feature_id or key)[:64],
+                name=(card.name or "")[:300],
+                category=(card.category or None),
+                maps_url=card.maps_url,
+                source=nguon,
+                reason=ly_do,
+            )
+        )
+        self.db.execute(
+            update(ScrapeJob)
+            .where(ScrapeJob.id == job_id)
+            .values(rejected_count=ScrapeJob.rejected_count + 1)
+        )
+        self.db.commit()
+
     def _link_keyword(self, place_id: int, keyword: str) -> None:
         exists = self.db.execute(
             select(PlaceKeyword.id).where(
@@ -274,7 +416,22 @@ class PlaceWriter:
             self.db.flush()
 
     # ----- pha chi tiết -----
-    def apply_detail(self, place: Place, detail: DetailResult) -> Place:
+    def apply_detail(
+        self, place: Place, detail: DetailResult, cho_phep: list[str] | None = None
+    ) -> Place:
+        """Áp dữ liệu trang chi tiết lên một địa điểm đã có.
+
+        `cho_phep` để CHẤM LẠI ngành nghề. Bắt buộc phải có, vì trang chi tiết
+        ghi đè `place.category` — và nhãn ở đây thường khác hẳn nhãn trên thẻ kết
+        quả, hay gặp nhất là thẻ ghi tiếng bản ngữ còn trang chi tiết ghi tiếng
+        Anh. Không chấm lại thì kết luận cũ dựa trên một cái nhãn KHÔNG CÒN TỒN
+        TẠI nữa.
+
+        Đo thật: "AKR FRESH VEG & FROZEN FOODS PVT LTD" và "Rangat Bazar" đang
+        mang nhãn "Fruit and vegetable wholesaler" — nằm thẳng trong danh mục —
+        mà `relevance` vẫn là `weak`. Hai lead thật bị giấu khỏi bảng, và nhìn
+        vào dữ liệu thì thấy mâu thuẫn không giải thích nổi.
+        """
         if detail.name:
             place.name = detail.name
         if detail.address:
@@ -334,6 +491,15 @@ class PlaceWriter:
         place.last_error = None
         place.scraped_at = _now()
         place.last_verified_at = _now()
+        diem = cham_lien_quan(place.category, place.name, cho_phep)
+        truoc = place.relevance
+        # CHỈ ĐƯỢC NÂNG (`gop`), không được hạ. Trang chi tiết biết rõ hơn về
+        # NHÃN, nhưng thẻ kết quả mới là thứ đã qua đủ bước phân xử — kể cả lượt
+        # AI xem tên. Cho phép hạ ở đây thì một phán quyết "giữ" của AI bị một
+        # cái nhãn chung chung xoá mất, mà không ai thấy.
+        place.relevance = gop_lien_quan(truoc, diem)
+        if place.relevance != truoc:
+            place.relevance_source, place.relevance_reason = "rule", None
         place.search_text = build_search_text(
             place.name, place.address or place.address_short, place.category
         )

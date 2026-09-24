@@ -18,7 +18,9 @@ from collections import deque
 from datetime import UTC, datetime
 
 from loguru import logger
+from starlette.concurrency import run_in_threadpool
 
+from app.core import ai
 from app.core.config import Settings, get_settings
 from app.core.database import SessionLocal
 from app.core.logging_config import setup_logging
@@ -29,7 +31,7 @@ from app.modules.scraper.engine.browser import (
     new_page,
 )
 from app.modules.scraper.engine.detail import DetailParseError, scrape_detail
-from app.modules.scraper.engine.models import STOP_RECENT
+from app.modules.scraper.engine.models import STOP_RECENT, CardResult
 from app.modules.scraper.engine.pacing import Pacer, in_night_rest
 from app.modules.scraper.engine.search import search_query
 from app.modules.scraper.engine.website import check_many
@@ -42,7 +44,14 @@ from app.modules.scraper.job.entity import (
 )
 from app.modules.scraper.job.repository import JobRepository
 from app.modules.scraper.place.entity import Place
-from app.modules.scraper.place.writer import PlaceWriter, needs_detail, region_of
+from app.modules.scraper.place.relevance import LIEN_QUAN, NGHI_RAC, RANH_GIOI
+from app.modules.scraper.place.relevance import cham as cham_lien_quan
+from app.modules.scraper.place.writer import (
+    PlaceWriter,
+    danh_muc_cho_place,
+    needs_detail,
+    region_of,
+)
 from app.modules.scraper.status.repository import WorkerStatusRepository
 
 _stop = asyncio.Event()
@@ -55,6 +64,17 @@ class JobInterrupted(Exception):
         super().__init__(reason)
         self.reason = reason
         self.requeue = requeue
+
+
+def _danh_muc_cua(params: dict, place: Place) -> list[str]:
+    """Danh mục ngành nghề áp cho một địa điểm, tra theo QUỐC GIA CỦA NÓ.
+
+    Pha chi tiết không gắn với một truy vấn nào nên không có `gl` để dùng như pha
+    tìm kiếm — nhưng lúc này địa điểm đã có `country_code` chốt từ địa chỉ hoặc
+    toạ độ, tức là nguồn còn chắc hơn `gl`.
+    """
+    ma = (place.country_code or "").upper()
+    return (params.get("category_map") or {}).get(ma) or []
 
 
 class Runner:
@@ -142,6 +162,45 @@ class Runner:
         await asyncio.sleep(self.s.block_backoff_seconds)
         raise JobInterrupted(f"bị chặn: {exc}", requeue=True)
 
+    async def _phan_xu(
+        self, params: dict, ranh_gioi: list[CardResult], query_text: str
+    ) -> dict[int, ai.PhanXet]:
+        """Nhờ AI phán những thẻ luật cứng không quyết nổi. Trả dict theo chỉ số.
+
+        NGOẠI LỆ DUY NHẤT của luật "worker không bao giờ gọi AI", và nó giữ đúng
+        tinh thần của luật đó: mọi đường hỏng đều trả về dict RỖNG chứ không ném
+        lỗi ra ngoài, và dict rỗng nghĩa là "giữ lại kèm dấu nghi ngờ". Không có
+        đường nào để AI làm chết một lượt quét.
+
+        Chạy qua threadpool vì SDK của Anthropic là ĐỒNG BỘ. Gọi thẳng trong
+        `async def` sẽ chặn event loop suốt mấy giây mỗi truy vấn.
+        """
+        settings = get_settings()
+        if not ranh_gioi or not settings.ai_judge_enabled or not ai.is_enabled():
+            return {}
+
+        # Vượt trần thì cắt bớt chứ không bỏ cả lô: phán được bao nhiêu hay bấy
+        # nhiêu, phần dư rơi về "chưa phán được" và vẫn được giữ lại.
+        lo = ranh_gioi[: settings.ai_judge_max_per_query]
+        mat_hang = list(params.get("keywords") or [])
+        ung_vien = [
+            ai.UngVien(
+                stt=i,
+                name=c.name or "",
+                category=c.category,
+                address=c.address_short,
+            )
+            for i, c in enumerate(lo)
+        ]
+        try:
+            return await run_in_threadpool(ai.judge_places, mat_hang, ung_vien)
+        except ai.AiUnavailable as exc:
+            logger.warning("Không phân xử được {} thẻ của '{}': {}", len(lo), query_text, exc)
+            return {}
+        except Exception as exc:  # noqa: BLE001 — tuyệt đối không để lỗi lạ giết job
+            logger.warning("Lỗi lạ khi phân xử thẻ của '{}': {}", query_text, exc)
+            return {}
+
     # ---------- pha 1: tìm kiếm ----------
     async def run_search_phase(self, page, job_id: int, params: dict) -> None:  # noqa: ANN001
         self.phase = "search"
@@ -206,17 +265,66 @@ class Runner:
                 await self.pacer.wait()
                 continue
 
+            # Danh mục ngành nghề của ĐÚNG quốc gia truy vấn này, chốt từ lúc tạo
+            # job. Rỗng -> không lọc gì, ghi hết.
+            cho_phep = (params.get("category_map") or {}).get((query_gl or "").upper()) or []
+
+            # Bước 1: chấm bằng luật cứng, tách riêng những thẻ luật không quyết nổi.
+            #
+            # Làm thành ba bước chứ không ghi thẳng trong một vòng, vì bước 2 gọi
+            # AI theo LÔ. Gọi từng thẻ một thì 20 thẻ ranh giới là 20 lượt gọi và
+            # 20 lần chờ mạng chen vào giữa lúc quét.
+            chac_chan: list[tuple[CardResult, str | None]] = []
+            ranh_gioi: list[CardResult] = []
+            for card in cards:
+                diem = cham_lien_quan(card.category, card.name, cho_phep)
+                if diem == RANH_GIOI:
+                    ranh_gioi.append(card)
+                else:
+                    chac_chan.append((card, diem))
+
+            # Bước 2: hỏi AI cho riêng phần ranh giới.
+            phan_xet = await self._phan_xu(params, ranh_gioi, query_text)
+
+            # Bước 3: ghi tất cả, phần ranh giới đi kèm phán xét (nếu có).
             new_count = 0
+            bi_loai = 0
             db = SessionLocal()
             try:
                 writer = PlaceWriter(db, params.get("region", "VN"))
-                for card in cards:
+
+                # (thẻ, điểm, nguồn, lý do) — gộp hai nhóm rồi ghi một lượt để
+                # đường ghi chỉ có đúng một chỗ, không phải hai bản sao lệch nhau.
+                de_ghi = [
+                    (card, diem, "rule" if diem is not None else None, None)
+                    for card, diem in chac_chan
+                ]
+                for i, card in enumerate(ranh_gioi):
+                    px = phan_xet.get(i)
+                    if px is None:
+                        # AI tắt, hỏng, hoặc trả thiếu mục này. GIỮ LẠI kèm dấu
+                        # nghi ngờ — một lần mạng chập chờn không được phép biến
+                        # thành một lần mất lead vĩnh viễn. Người dùng lọc
+                        # "Chưa chắc chắn" là thấy hết những dòng này.
+                        de_ghi.append(
+                            (card, RANH_GIOI, "rule", "Chưa phân xử được — AI không trả lời")
+                        )
+                    else:
+                        de_ghi.append((card, LIEN_QUAN if px.giu else NGHI_RAC, "ai", px.ly_do))
+
+                for card, diem, nguon, ly_do in de_ghi:
                     # `query_gl` là quốc gia đã tìm ra thẻ này — dùng để đọc đúng
                     # số điện thoại nội địa khi địa chỉ chưa đủ để suy ra nước.
-                    _, is_new = writer.upsert_from_card(
-                        card, job_id, query_text, country_code=query_gl
+                    place, is_new = writer.upsert_from_card(
+                        card, job_id, query_text, country_code=query_gl,
+                        cho_phep=cho_phep, diem=diem, nguon=nguon, ly_do=ly_do,
                     )
+                    if place is None:
+                        # Ngoài danh mục ngành nghề -> đã ghi vết ở `place_rejects`.
+                        bi_loai += 1
+                        continue
                     new_count += int(is_new)
+
                 # Đếm theo số liên kết job-địa điểm THẬT, không cộng dồn len(cards):
                 # nhiều truy vấn giao nhau sẽ trả về cùng một địa điểm, cộng dồn sẽ
                 # thổi phồng mẫu số và thanh tiến độ không bao giờ tới 100%.
@@ -224,6 +332,15 @@ class Runner:
             finally:
                 db.close()
 
+            if bi_loai or ranh_gioi:
+                logger.info(
+                    "Truy vấn '{}': {}/{} thẻ bị loại, {} thẻ ranh giới ({} được AI phán)",
+                    query_text, bi_loai, len(cards), len(ranh_gioi), len(phan_xet),
+                )
+            # `results_found` đếm thứ GOOGLE TRẢ VỀ, không trừ phần bị loại. Đây là
+            # con số quyết định "địa bàn này còn sót không" (chạm trần ~120 nghĩa là
+            # Google cắt); trừ đi phần mình tự loại sẽ làm một tỉnh đã bị cắt trông
+            # như chưa đầy, và nó biến mất khỏi danh sách địa bàn còn sót.
             self._reset_query(
                 query_id, "done", results_found=len(cards), stop_reason=outcome.stop_reason
             )
@@ -317,7 +434,9 @@ class Runner:
             try:
                 target = db.get(Place, place_id)
                 if target is not None:
-                    PlaceWriter(db, region).apply_detail(target, detail)
+                    PlaceWriter(db, region).apply_detail(
+                        target, detail, cho_phep=_danh_muc_cua(params, target)
+                    )
             finally:
                 db.close()
 
@@ -425,7 +544,9 @@ class Runner:
                 try:
                     target = db.get(Place, place_id)
                     if target is not None:
-                        PlaceWriter(db, region).apply_detail(target, detail)
+                        PlaceWriter(db, region).apply_detail(
+                            target, detail, cho_phep=danh_muc_cho_place(db, target)
+                        )
                 finally:
                     db.close()
 

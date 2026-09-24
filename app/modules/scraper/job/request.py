@@ -28,6 +28,16 @@ class JobCreateRequest(BaseModel):
             "không khai thì dùng `keywords` chung."
         ),
     )
+    category_map: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Danh mục ngành nghề ĐƯỢC PHÉP GIỮ, theo mã quốc gia. Thẻ kết quả có "
+            "ngành nghề ngoài danh mục bị loại NGAY lúc ghi, không vào bảng địa "
+            "điểm (vẫn lưu vết ở `place_rejects` để soi lại). "
+            "Không khai thì server tự tra từ bản dịch đã lưu của chính bộ từ khoá "
+            "này; vẫn không có thì KHÔNG lọc gì cho quốc gia đó."
+        ),
+    )
     ttl_days: int = Field(90, ge=0, le=3650, description="Bỏ qua địa điểm đã quét trong ngần này ngày")
     skip_recent_queries: bool = Field(
         True,

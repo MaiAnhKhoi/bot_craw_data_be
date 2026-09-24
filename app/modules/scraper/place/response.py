@@ -67,6 +67,15 @@ class PlaceResponse(BaseModel):
     maps_url: str | None
     # Trạng thái CHĂM SÓC — khác hẳn `status` (quét) và `liveness_label` (sống/chết).
     contact_status: str          # new | called | interested | rejected
+    # match = đúng danh mục ngành nghề · weak = đã chấm và thấy lạc đề
+    # null = CHƯA CHẤM ĐƯỢC (job không khai danh mục) — khác hẳn "lạc đề",
+    # nên giao diện không được đánh dấu nghi ngờ lên nhóm này.
+    relevance: str | None
+    relevance_source: str | None  # rule = luật cứng quyết · ai = AI phân xử
+    # Lời giải thích của AI, chỉ có khi `relevance_source == "ai"`. Đây là thứ
+    # duy nhất trả lời được "vì sao dòng này được giữ / bị loại" mà không phải
+    # đi đọc log — bộ lọc sai thì đây là chỗ nhìn đầu tiên.
+    relevance_reason: str | None
     contact_note: str | None
     contact_at: datetime | None
     keywords: list[str] = []
@@ -102,6 +111,9 @@ class PlaceResponse(BaseModel):
             lng=p.lng,
             maps_url=p.maps_url,
             contact_status=p.contact_status,
+            relevance=p.relevance,
+            relevance_source=p.relevance_source,
+            relevance_reason=p.relevance_reason,
             contact_note=p.contact_note,
             contact_at=p.contact_at,
             keywords=keywords or [],

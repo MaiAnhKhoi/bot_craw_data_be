@@ -60,81 +60,132 @@ NGUON_QUOC_GIA_VI = {
     "gl": "Đoán theo nước đang tìm",
 }
 
-# (tiêu đề cột, hàm lấy giá trị, độ rộng)
-COLUMNS: tuple[tuple[str, Callable[[Place, list[str]], object], int], ...] = (
-    ("Tên công ty", lambda p, k: p.name, 42),
+# (khoá, tiêu đề cột, hàm lấy giá trị, độ rộng)
+#
+# KHOÁ là thứ giao diện gửi lên để chọn cột, nên nó KHÔNG BAO GIỜ được đổi —
+# đổi một khoá là mọi liên kết tải file người dùng đã lưu lại im lặng xuất
+# thiếu cột đó. Tiêu đề thì sửa thoải mái, nó chỉ để người đọc.
+COLUMNS: tuple[tuple[str, str, Callable[[Place, list[str]], object], int], ...] = (
+    ("name", "Tên công ty", lambda p, k: p.name, 42),
     # Dùng được thì dùng địa chỉ đầy đủ, không có thì đành lấy mẩu từ thẻ —
     # nhưng cột kế bên nói rõ đó là mẩu, để không ai gửi thư tới "Phan Huy Ích".
-    ("Vị trí", lambda p, k: p.address or p.address_short, 50),
-    ("Địa chỉ đầy đủ?", lambda p, k: "Có" if p.address else "Chưa", 15),
-    ("Quốc gia", lambda p, k: geo.country_name(p.country_code), 16),
+    ("location", "Vị trí", lambda p, k: p.address or p.address_short, 50),
+    ("address_full", "Địa chỉ đầy đủ?", lambda p, k: "Có" if p.address else "Chưa", 15),
+    ("country", "Quốc gia", lambda p, k: geo.country_name(p.country_code), 16),
     # Cột này để người dùng biết dòng nào là PHỎNG ĐOÁN yếu mà soi lại.
-    ("Nguồn quốc gia", lambda p, k: NGUON_QUOC_GIA_VI.get(p.country_source or "", ""), 20),
+    ("country_source", "Nguồn quốc gia", lambda p, k: NGUON_QUOC_GIA_VI.get(p.country_source or "", ""), 20),
     # Dạng quốc tế: file xuất đi ra ngoài phần mềm này, mất mã nước là mất luôn
     # thông tin gọi đi nước nào — và số Thái trông y hệt số Việt Nam.
-    ("Số điện thoại", lambda p, k: to_international(p.phone_e164, p.phone_national or p.phone_raw), 20),
-    ("Website", lambda p, k: p.website, 34),
-    ("Tình trạng", lambda p, k: LIVENESS_VI.get(p.liveness_label, p.liveness_label), 22),
+    ("phone", "Số điện thoại", lambda p, k: to_international(p.phone_e164, p.phone_national or p.phone_raw), 20),
+    ("website", "Website", lambda p, k: p.website, 34),
+    ("liveness", "Tình trạng", lambda p, k: LIVENESS_VI.get(p.liveness_label, p.liveness_label), 22),
     # Xuất kèm để sale làm việc ngay trên file Excel mà vẫn biết ai đã gọi rồi.
-    ("Chăm sóc", lambda p, k: CONTACT_VI.get(p.contact_status, p.contact_status), 16),
-    ("Ghi chú chăm sóc", lambda p, k: p.contact_note, 40),
-    ("Điểm tình trạng", lambda p, k: p.liveness_score, 15),
-    ("Lý do nghi ngờ", lambda p, k: "; ".join(REASON_VI.get(r, r) for r in (p.liveness_reasons or [])), 46),
-    ("Ngành nghề", lambda p, k: p.category, 26),
-    ("Điểm đánh giá", lambda p, k: p.rating, 13),
-    ("Số đánh giá", lambda p, k: p.review_count, 12),
-    ("Đánh giá mới nhất (ngày)", lambda p, k: p.latest_review_days, 20),
-    ("Tình trạng website", lambda p, k: WEBSITE_STATUS_VI.get(p.website_status, p.website_status), 18),
-    ("SĐT chuẩn E.164", lambda p, k: p.phone_e164, 18),
-    ("Vĩ độ", lambda p, k: p.lat, 11),
-    ("Kinh độ", lambda p, k: p.lng, 11),
-    ("Từ khoá tìm ra", lambda p, k: " | ".join(k), 34),
-    ("Link Google Maps", lambda p, k: p.maps_url, 40),
-    ("Thời điểm quét", lambda p, k: p.scraped_at.isoformat() if p.scraped_at else None, 22),
+    ("contact", "Chăm sóc", lambda p, k: CONTACT_VI.get(p.contact_status, p.contact_status), 16),
+    ("contact_note", "Ghi chú chăm sóc", lambda p, k: p.contact_note, 40),
+    ("liveness_score", "Điểm tình trạng", lambda p, k: p.liveness_score, 15),
+    (
+        "liveness_reasons",
+        "Lý do nghi ngờ",
+        lambda p, k: "; ".join(REASON_VI.get(r, r) for r in (p.liveness_reasons or [])),
+        46,
+    ),
+    ("category", "Ngành nghề", lambda p, k: p.category, 26),
+    ("rating", "Điểm đánh giá", lambda p, k: p.rating, 13),
+    ("review_count", "Số đánh giá", lambda p, k: p.review_count, 12),
+    ("latest_review_days", "Đánh giá mới nhất (ngày)", lambda p, k: p.latest_review_days, 20),
+    (
+        "website_status",
+        "Tình trạng website",
+        lambda p, k: WEBSITE_STATUS_VI.get(p.website_status, p.website_status),
+        18,
+    ),
+    ("phone_e164", "SĐT chuẩn E.164", lambda p, k: p.phone_e164, 18),
+    ("lat", "Vĩ độ", lambda p, k: p.lat, 11),
+    ("lng", "Kinh độ", lambda p, k: p.lng, 11),
+    ("keywords", "Từ khoá tìm ra", lambda p, k: " | ".join(k), 34),
+    ("maps_url", "Link Google Maps", lambda p, k: p.maps_url, 40),
+    ("scraped_at", "Thời điểm quét", lambda p, k: p.scraped_at.isoformat() if p.scraped_at else None, 22),
 )
 
-HEADERS = [c[0] for c in COLUMNS]
+KHOA_COT = tuple(c[0] for c in COLUMNS)
+# Tiêu đề theo đúng thứ tự chuẩn. Giữ lại vì test và vài chỗ đọc file cần
+# biết cột nào nằm ở đâu khi xuất đủ.
+HEADERS = [c[1] for c in COLUMNS]
+
+
+def chon_cot(khoa: list[str] | None) -> tuple:
+    """Lọc COLUMNS theo danh sách khoá giao diện gửi lên.
+
+    Giữ THỨ TỰ CHUẨN của `COLUMNS`, không theo thứ tự người dùng gửi: bốn cột
+    nghiệp vụ đứng đầu là một quyết định có chủ đích (tên, vị trí, SĐT, website —
+    thứ sale cần trước), và một file xuất mỗi lần một thứ tự cột thì không ai
+    dựng được công thức Excel trên đó.
+
+    Khoá lạ bị BỎ QUA chứ không báo lỗi: giao diện có thể gửi tên cột của bảng
+    mà file xuất không có. Nhưng rỗng hoặc không khoá nào hợp lệ thì trả về ĐỦ
+    cột — thà xuất thừa còn hơn giao cho sale một file trống trơn.
+    """
+    if not khoa:
+        return COLUMNS
+    can = {k.strip() for k in khoa if k and k.strip()}
+    ra = tuple(c for c in COLUMNS if c[0] in can)
+    return ra or COLUMNS
 
 
 def _cell(value: object) -> object:
     return "" if value is None else value
 
 
-def rows_for(places: Iterable[Place], keywords: dict[int, list[str]]) -> Iterator[list]:
+def rows_for(
+    places: Iterable[Place], keywords: dict[int, list[str]], cols: tuple = COLUMNS
+) -> Iterator[list]:
     for p in places:
         kw = keywords.get(p.id, [])
-        yield [_cell(getter(p, kw)) for _, getter, _w in COLUMNS]
+        yield [_cell(getter(p, kw)) for _k, _t, getter, _w in cols]
 
 
-def export_xlsx(places: Iterable[Place], keywords: dict[int, list[str]], path: Path) -> Path:
+def export_xlsx(
+    places: Iterable[Place], keywords: dict[int, list[str]], path: Path, cols: tuple = COLUMNS
+) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     wb = xlsxwriter.Workbook(str(path), {"constant_memory": True, "default_date_format": "yyyy-mm-dd"})
     ws = wb.add_worksheet("Danh sách")
     header_fmt = wb.add_format({"bold": True, "font_color": "#FFFFFF", "bg_color": "#1F4E78", "border": 1})
-    for col, (title, _g, width) in enumerate(COLUMNS):
+    for col, (_k, title, _g, width) in enumerate(cols):
         ws.write(0, col, title, header_fmt)
         ws.set_column(col, col, width)
     ws.freeze_panes(1, 0)
     row_idx = 0
-    for row_idx, row in enumerate(rows_for(places, keywords), start=1):
+    for row_idx, row in enumerate(rows_for(places, keywords, cols), start=1):
         for col, value in enumerate(row):
             ws.write(row_idx, col, value)
-    ws.autofilter(0, 0, max(row_idx, 1), len(COLUMNS) - 1)
+    ws.autofilter(0, 0, max(row_idx, 1), len(cols) - 1)
     wb.close()
     return path
 
 
-def export_csv(places: Iterable[Place], keywords: dict[int, list[str]], path: Path) -> Path:
+def export_csv(
+    places: Iterable[Place], keywords: dict[int, list[str]], path: Path, cols: tuple = COLUMNS
+) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     # utf-8-sig để Excel trên Windows mở ra không lỗi font tiếng Việt.
     with path.open("w", newline="", encoding="utf-8-sig") as fh:
         writer = csv.writer(fh)
-        writer.writerow(HEADERS)
-        writer.writerows(rows_for(places, keywords))
+        writer.writerow([t for _k, t, _g, _w in cols])
+        writer.writerows(rows_for(places, keywords, cols))
     return path
 
 
-def export_json(places: Iterable[Place], keywords: dict[int, list[str]], path: Path) -> Path:
+def export_json(
+    places: Iterable[Place], keywords: dict[int, list[str]], path: Path, cols: tuple = COLUMNS
+) -> Path:
+    """JSON CỐ Ý xuất đủ trường, bỏ qua `cols`.
+
+    Hai định dạng kia là để người đọc bằng mắt nên bớt cột là hợp lý. JSON là để
+    máy đọc: nó giữ giá trị thô (toạ độ là số, mã quốc gia là mã) chứ không phải
+    chuỗi hiển thị tiếng Việt, và một bên tiêu thụ nó mà thiếu trường thì hỏng
+    ngay. Điều này ghi cả trong mô tả của endpoint để không ai bị bất ngờ.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as fh:
         fh.write("[\n")

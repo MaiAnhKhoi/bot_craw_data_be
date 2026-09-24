@@ -22,7 +22,7 @@ from app.core.pagination import Page, PageParams, page_params
 from app.core.response import ApiResponse
 from app.modules.identity.entity import User
 from app.modules.scraper.place.entity import Place
-from app.modules.scraper.place.export import EXPORTERS, MEDIA_TYPES
+from app.modules.scraper.place.export import EXPORTERS, KHOA_COT, MEDIA_TYPES, chon_cot
 from app.modules.scraper.place.repository import PlaceFilter, PlaceRepository
 from app.modules.scraper.place.response import (
     CountryCountResponse,
@@ -42,6 +42,14 @@ def place_filter(
     contact_status: str | None = Query(
         None, description="Trạng thái chăm sóc: new | called | interested | rejected"
     ),
+    relevance: str | None = Query(
+        None,
+        description=(
+            "match = đúng ngành | weak = đã chấm và thấy lạc đề | "
+            "unsure = AI chưa phân xử được, đang giữ lại. "
+            "Bỏ trống thì không lọc — kể cả nhóm chưa chấm được (null)."
+        ),
+    ),
     liveness: list[str] = Query(default=[], description="ACTIVE | SUSPECT | DEAD"),
     business_status: str | None = Query(None),
     has_phone: bool | None = Query(None),
@@ -51,7 +59,7 @@ def place_filter(
 ) -> PlaceFilter:
     return PlaceFilter(
         q=q, job_id=job_id, keyword=keyword, country=country,
-        contact_status=contact_status, liveness=liveness,
+        contact_status=contact_status, relevance=relevance, liveness=liveness,
         business_status=business_status, has_phone=has_phone, has_website=has_website,
         min_rating=min_rating, sort=sort,
     )
@@ -250,10 +258,19 @@ def _dong_kem_tu_khoa(
         yield from dem
 
 
-@router.get("/export", summary="Xuất Excel / CSV / JSON theo đúng bộ lọc đang xem")
+@router.get("/export", summary="Xuất Excel / CSV / JSON theo đúng bộ lọc và cột đang xem")
 def export_places(
     f: PlaceFilter = Depends(place_filter),
     fmt: str = Query("xlsx", alias="format", description="xlsx | csv | json"),
+    columns: str | None = Query(
+        None,
+        description=(
+            "Khoá các cột cần xuất, ngăn nhau bằng dấu phẩy. Bỏ trống = xuất đủ "
+            f"{len(KHOA_COT)} cột. Khoá hợp lệ: {', '.join(KHOA_COT)}. "
+            "CHỈ áp dụng cho xlsx và csv — json luôn xuất đủ trường vì nó dành cho "
+            "máy đọc, thiếu trường là bên tiêu thụ hỏng ngay."
+        ),
+    ),
     db: Session = Depends(get_db),
     # Trình duyệt tải file bằng thẻ <a download> nên không gắn được header —
     # endpoint này chấp nhận token qua query string, xem app/core/deps.py.
@@ -279,7 +296,8 @@ def export_places(
     # Một dict rỗng được truyền vào và ĐỔ ĐẦY dần trong lúc duyệt — xem
     # `_dong_kem_tu_khoa`. Vẫn theo lô để không N+1, nhưng chỉ một lượt SELECT.
     keywords: dict[int, list[str]] = {}
-    EXPORTERS[fmt](_dong_kem_tu_khoa(repo, f, keywords), keywords, path)
+    cols = chon_cot(columns.split(",") if columns else None)
+    EXPORTERS[fmt](_dong_kem_tu_khoa(repo, f, keywords), keywords, path, cols)
     return FileResponse(path, media_type=MEDIA_TYPES[fmt], filename=filename)
 
 

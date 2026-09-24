@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.pagination import PageParams
 from app.modules.scraper.place.entity import JobPlace, Place, PlaceKeyword
+from app.modules.scraper.place.relevance import NGHI_RAC
 
 # Cột cho phép sắp xếp. Danh sách trắng — không bao giờ ghép chuỗi cột từ query
 # string của người dùng vào SQL.
@@ -80,6 +81,7 @@ class PlaceFilter:
     keyword: str | None = None
     country: str | None = None
     contact_status: str | None = None
+    relevance: str | None = None
     liveness: list[str] = field(default_factory=list)
     business_status: str | None = None
     has_phone: bool | None = None
@@ -114,6 +116,27 @@ class PlaceRepository:
             stmt = stmt.where(Place.country_code == f.country)
         if f.contact_status:
             stmt = stmt.where(Place.contact_status == f.contact_status)
+        if f.relevance:
+            # `weak` phải LOẠI luôn NULL chứ không chỉ so bằng: NULL là "chưa chấm
+            # được" (job không khai danh mục ngành nghề), hoàn toàn khác "đã chấm
+            # và thấy lạc đề". Gộp hai thứ lại là đẩy dữ liệu sạch vào ô nghi ngờ.
+            stmt = stmt.where(Place.relevance == f.relevance)
+        else:
+            # KHÔNG lọc gì = vẫn phải giấu những dòng ĐÃ CHẤM và thấy lạc đề.
+            #
+            # `weak` chỉ xuất hiện ở địa điểm ĐÃ NẰM SẴN trong bảng từ trước khi
+            # có bộ lọc: thẻ mới lạc đề thì bị chặn ngay lúc ghi, không bao giờ
+            # vào tới đây. Với dòng cũ thì `upsert_from_card` cố ý không xoá (xoá
+            # là để job này quyết thay job khác), nên nếu đường đọc cũng không
+            # giấu thì chúng nằm lại trong bảng vĩnh viễn — đúng con tiệm bánh
+            # kem mà người dùng chỉ ra.
+            #
+            # Giấu chứ KHÔNG xoá: muốn soi lại thì `?relevance=weak` vẫn ra đủ.
+            # NULL ("chưa chấm được") vẫn hiện bình thường — nó khác hẳn "đã chấm
+            # và thấy lạc đề".
+            stmt = stmt.where(
+                or_(Place.relevance.is_(None), Place.relevance != NGHI_RAC)
+            )
         if f.liveness:
             stmt = stmt.where(Place.liveness_label.in_(f.liveness))
         if f.business_status:
