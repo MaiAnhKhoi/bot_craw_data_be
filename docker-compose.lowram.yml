@@ -1,0 +1,78 @@
+# =====================================================================
+# Lớp phủ cho MÁY ÍT RAM (8GB trở xuống).
+#
+# Dùng khi Vmmem trong Task Manager phình lên vài GB. Nhưng phải nói rõ trước:
+# lớp phủ này KHÔNG phải cách sửa chính. Đo trên một máy đang chạy đủ 5 dịch vụ,
+# tổng RAM các container thật sự dùng là ~225 MB (web 42, api 75, worker 59,
+# db 49, backup 1). Vmmem 3,8 GB gần như toàn bộ là WSL2 GIỮ CHỖ và cache trang
+# — nó xin RAM của Windows rồi không trả lại, chứ không phải app ăn hết.
+#
+# Cách sửa chính nằm ở phía Windows, trong %UserProfile%\.wslconfig:
+#
+#     [wsl2]
+#     memory=3GB
+#     processors=2
+#     swap=2GB
+#     autoMemoryReclaim=gradual
+#
+# rồi `wsl --shutdown` và mở lại Docker Desktop. `autoMemoryReclaim` mới là thứ
+# bắt WSL trả RAM về cho Windows; thiếu nó thì đặt `memory` bao nhiêu Vmmem cũng
+# leo dần tới đúng con số đó rồi nằm lì ở đấy.
+#
+# Lớp phủ này là tầng thứ hai: chặn trần CHO TỪNG dịch vụ để một con rò rỉ không
+# nuốt hết phần RAM ít ỏi đã cấp cho máy ảo.
+#
+# Cách dùng — nối vào sau hai file kia:
+#     docker compose -f docker-compose.yml -f docker-compose.web.yml \
+#                    -f docker-compose.lowram.yml up -d
+#
+# Gõ dài thì đặt một dòng trong .env:
+#     COMPOSE_FILE=docker-compose.yml:docker-compose.web.yml:docker-compose.lowram.yml
+# =====================================================================
+
+services:
+  db:
+    # File gốc CỐ Ý không đặt trần cho Postgres — trên máy nhiều RAM, để nó tự
+    # dùng bộ đệm lớn là đúng. Trên máy 8GB thì nó thừa hưởng nguyên dung lượng
+    # máy ảo, và đó là dịch vụ duy nhất không có trần.
+    #
+    # 512m: đo thật lúc chạy là 49 MB với 200 địa điểm. Chừa gấp mười lần cho
+    # lúc bảng lên hàng trăm nghìn dòng và cho những câu GROUP BY của trang
+    # Tổng quan.
+    mem_limit: 512m
+    # `shared_buffers` mặc định của Postgres là 128MB, hợp lý trong 512m.
+    # `work_mem` hạ xuống vì phần lớn câu truy vấn ở đây là lọc + phân trang,
+    # không có phép nối lớn nào.
+    command: >
+      postgres
+      -c shared_buffers=128MB
+      -c work_mem=4MB
+      -c maintenance_work_mem=64MB
+      -c max_connections=50
+
+  api:
+    # Đo thật 75 MB. 384m đủ rộng cho lúc xuất file 100k dòng — việc đó ghi theo
+    # luồng nên không nạp cả bảng vào RAM.
+    mem_limit: 384m
+
+  worker:
+    # Đây là dịch vụ ngốn nhất: nó chạy Chromium thật. File gốc để 2g cho máy
+    # khoẻ; 1g là mức đủ cho một trang tại một thời điểm, mà worker vốn chỉ mở
+    # MỘT trang.
+    #
+    # Chạm trần thì Chromium bị kill và job dừng giữa chừng — nếu thấy worker
+    # chết lặp lại trên máy yếu, nâng con số này TRƯỚC khi nghi ngờ chỗ khác.
+    mem_limit: 1g
+    # /dev/shm của Chromium. File gốc để 1gb, nhưng `browser.py` đã truyền
+    # `--disable-dev-shm-usage` nên Chromium ghi ra đĩa thay vì bộ nhớ chia sẻ —
+    # giữ 1gb chỉ là chừa chỗ thừa. 256m an toàn và tiết kiệm được đúng chừng đó.
+    shm_size: 256m
+
+  web:
+    # Next standalone, đo thật 42 MB. Đây là server render, không phải trình
+    # duyệt — nó không phình theo số người xem.
+    mem_limit: 256m
+
+  backup:
+    # Chỉ là `pg_dump` gọi theo lịch, đo thật dưới 1 MB.
+    mem_limit: 128m
