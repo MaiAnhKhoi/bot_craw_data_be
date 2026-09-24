@@ -115,9 +115,24 @@ def test_countries_phai_khai_truoc_place_id():
 
 def test_dem_bang_group_by_chu_khong_nap_ca_bang():
     sql = sql_of(COUNTRY_COUNTS)
-    assert "count(places.id)" in sql
     assert "GROUP BY places.country_code" in sql
     assert "places.country_code IS NOT NULL" in sql
+
+
+def test_dem_bang_count_sao_chu_khong_count_cot():
+    """`count(*)` chứ KHÔNG phải `count(id)` — đo ở 100.000 dòng thì chênh 6,5 lần.
+
+        SELECT country_code, count(id) GROUP BY country_code   122,9 ms  Seq Scan
+        SELECT country_code, count(*)  GROUP BY country_code    18,9 ms  Index Only Scan
+
+    `count(id)` bắt Postgres LẤY GIÁ TRỊ cột `id`, mà `id` không nằm trong
+    `ix_places_country_code`. Không đọc được từ chỉ mục thì phải mở heap; đã mở
+    hết heap rồi thì planner thấy quét toàn bảng còn rẻ hơn nên bỏ luôn chỉ mục.
+    Hai cách cho kết quả y hệt vì `id` là khoá chính NOT NULL.
+    """
+    sql = sql_of(COUNTRY_COUNTS)
+    assert "count(*)" in sql
+    assert "count(places.id)" not in sql
 
 
 def test_ten_tieng_viet_di_kem_ma():

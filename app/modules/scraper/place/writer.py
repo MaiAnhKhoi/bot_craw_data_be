@@ -590,7 +590,7 @@ class PlaceWriter:
     def count_pending_anywhere(self) -> int:
         return int(
             self.db.execute(
-                select(func.count(Place.id)).where(Place.status == PLACE_PENDING)
+                select(func.count()).where(Place.status == PLACE_PENDING)
             ).scalar_one()
         )
 
@@ -640,7 +640,7 @@ class PlaceWriter:
     def count_places_of_job(self, job_id: int) -> int:
         return int(
             self.db.execute(
-                select(func.count(JobPlace.place_id)).where(JobPlace.job_id == job_id)
+                select(func.count()).where(JobPlace.job_id == job_id)
             ).scalar_one()
         )
 
@@ -653,7 +653,7 @@ class PlaceWriter:
         """
         return int(
             self.db.execute(
-                select(func.count(JobPlace.place_id))
+                select(func.count())
                 .join(Place, Place.id == JobPlace.place_id)
                 .where(JobPlace.job_id == job_id, Place.status == PLACE_DONE)
             ).scalar_one()

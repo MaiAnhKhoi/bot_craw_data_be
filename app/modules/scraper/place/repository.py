@@ -25,8 +25,29 @@ SORTABLE = {
 # một lựa chọn lọc, đưa vào ô chọn chỉ khiến người dùng bấm vào rồi không hiểu.
 # GROUP BY chạy dưới Postgres (có ix_places_country_code) — bảng cỡ hàng trăm nghìn
 # dòng mà nạp ra Python đếm thì endpoint này thành chỗ nghẽn.
+# `count()` chứ KHÔNG phải `count(<cột>)` ở mọi câu đếm dưới đây.
+#
+# Nghe như chuyện cho đẹp, nhưng đo ở 100.000 dòng thì chênh 6,5 lần:
+#
+#     SELECT country_code, count(id)  GROUP BY country_code   122,9 ms  Seq Scan
+#     SELECT country_code, count(*)   GROUP BY country_code    18,9 ms  Index Only Scan
+#
+# Lý do: `count(id)` bắt Postgres phải LẤY GIÁ TRỊ cột `id`, mà `id` không nằm
+# trong `ix_places_country_code`. Không đọc được từ chỉ mục thì phải mở heap;
+# mà đã mở hết heap rồi thì planner thấy quét toàn bảng còn rẻ hơn, nên bỏ luôn
+# chỉ mục. `count(*)` chỉ đếm dòng, không cần cột nào, nên Index Only Scan với
+# `Heap Fetches: 0`.
+#
+# Hai cách cho kết quả Y HỆT vì `id` là khoá chính NOT NULL.
+#
+# MỘT ĐIỀU KIỆN dễ quên: lợi ích này cần VISIBILITY MAP, tức bảng phải được
+# VACUUM. Đo lại ngay sau khi nạp 100.000 dòng mà autovacuum chưa chạy thì
+# `count(*)` cũng Seq Scan 64 ms, y hệt `count(<cột>)`. Chỉ sau khi
+# `relallvisible` lên đủ thì planner mới đổi sang Index Only Scan. Nghĩa là
+# ngay sau một lượt quét lớn, trang Tổng quan vẫn chậm cho tới lúc autovacuum
+# bắt kịp — không phải lỗi, chỉ là đừng đo hiệu năng ở đúng thời điểm đó.
 COUNTRY_COUNTS = (
-    select(Place.country_code, func.count(Place.id))
+    select(Place.country_code, func.count())
     .where(Place.country_code.isnot(None))
     .group_by(Place.country_code)
 )
@@ -41,9 +62,9 @@ COUNTRY_COUNTS = (
 # lượt đó biến mất khỏi ô lọc mà không có dấu hiệu gì — người dùng tưởng không lọc
 # được, hoặc tệ hơn là tưởng không có dữ liệu.
 QUERY_COUNTS = (
-    select(PlaceKeyword.keyword, func.count(PlaceKeyword.place_id))
+    select(PlaceKeyword.keyword, func.count())
     .group_by(PlaceKeyword.keyword)
-    .order_by(func.count(PlaceKeyword.place_id).desc(), PlaceKeyword.keyword)
+    .order_by(func.count().desc(), PlaceKeyword.keyword)
 )
 
 
@@ -222,7 +243,7 @@ class PlaceRepository:
         return f.job_id is not None or bool(f.keyword)
 
     def count(self, f: PlaceFilter) -> int:
-        dem = func.count(func.distinct(Place.id)) if self._can_khu_trung(f) else func.count(Place.id)
+        dem = func.count(func.distinct(Place.id)) if self._can_khu_trung(f) else func.count()
         return int(self.db.execute(self._apply(select(dem), f)).scalar_one())
 
     def page(self, f: PlaceFilter, params: PageParams) -> list[Place]:
