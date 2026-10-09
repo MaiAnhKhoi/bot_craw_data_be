@@ -653,7 +653,10 @@ class PlaceWriter:
         """
         return int(
             self.db.execute(
+                # `select(func.count())` không tham chiếu bảng nào nên SQLAlchemy
+                # không biết nối TỪ đâu — phải chỉ rõ vế trái bằng select_from.
                 select(func.count())
+                .select_from(JobPlace)
                 .join(Place, Place.id == JobPlace.place_id)
                 .where(JobPlace.job_id == job_id, Place.status == PLACE_DONE)
             ).scalar_one()
