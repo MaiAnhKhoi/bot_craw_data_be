@@ -22,6 +22,9 @@ Google trả về vẫn nằm nguyên trong bảng.
 """
 from __future__ import annotations
 
+import re
+import unicodedata
+
 from app.core.text import fold_text
 
 # Đúng ngành — chắc chắn giữ.
@@ -70,28 +73,97 @@ VO_NGHIA = frozenset(
 )
 
 
-def tach_tu(value: str | None) -> set[str]:
-    """Tập các từ có nghĩa trong một chuỗi, đã bỏ dấu và viết thường.
+# Từ TIẾNG VIỆT có dấu mà gần như tên ngành nào cũng có, nên không phân biệt được
+# gì. Viết CÓ DẤU vì mục đích của cả bộ này là giữ dấu: "cửa hàng" là từ chung
+# chung, nhưng "cưa", "hang" thì không. Các từ không dấu ("doanh", "trung", "kinh")
+# nằm sẵn trong `VO_NGHIA` ở trên.
+VO_NGHIA_DAU = frozenset(
+    {
+        "cửa", "hàng", "công", "cơ", "sở", "nghiệp", "nhà", "đại", "lý", "điểm",
+        "tiệm", "quán", "tâm", "dịch", "vụ", "và", "các", "bán", "của",
+        # "đồ" là từ chỉ loại ("đồ gia dụng", "đồ chơi"): để nó lọt vào thì hai
+        # ngành chẳng liên quan gì nhau vẫn khớp nhau chỉ vì cùng có chữ "đồ".
+        # "chính hãng" là lời quảng cáo gắn vào tên cửa hàng đủ mọi ngành.
+        "đồ", "chính", "hãng",
+    }
+)
 
-    Tự tách bằng `str.isalnum()` thay vì regex vì `fold_text` chuyển chữ
-    Devanagari/Thái/Ả Rập sang chữ Latinh — `फल` và `फल थोक विक्रेता` phiên âm ra
-    cùng một gốc, nên so sánh vẫn chạy đúng với mọi bảng chữ cái.
+_TACH = re.compile(r"[\s\-_/|,.;:()\[\]{}'\"!?&+*#@~=<>]+")
+
+
+def _la_latinh_co_dau(tu: str) -> bool:
+    """Từ viết bằng chữ Latinh và CÓ DẤU (tiếng Việt, Pháp...).
+
+    Chữ Hindi/Thái/Hán không vào đây — chúng đã được `fold_text` phiên âm sang
+    Latinh và đi đường cũ, vì tách theo ký tự gốc sẽ cắt vụn chúng ở chỗ dấu
+    nguyên âm (`isalnum()` coi dấu đó không phải chữ).
     """
-    folded = fold_text(value)
-    if not folded:
+    if all(ord(c) < 128 for c in tu):
+        return False
+    return all(
+        unicodedata.name(c, "").startswith("LATIN") for c in tu if c.isalpha()
+    )
+
+
+def tach_tu(value: str | None, ung_vien: bool = False) -> set[str]:
+    """Tập các từ có nghĩa trong một chuỗi.
+
+    HAI ĐƯỜNG, vì hai loại chữ cần hai cách đối xử trái ngược:
+
+    * Chữ KHÔNG dấu hoặc phi-Latinh (tiếng Anh, Hindi, Thái, Hán): bỏ dấu rồi tách,
+      y như bản gốc. `fold_text` phiên âm Devanagari/Thái/Ả Rập sang Latinh nên
+      `फल` và `फल थोक विक्रेता` ra cùng một gốc.
+
+    * Chữ Latinh CÓ DẤU (tiếng Việt): GIỮ NGUYÊN DẤU. Bỏ dấu ở đây gây hai lỗi
+      đối xứng nhau, đều đã đo trên dữ liệu thật của job 3:
+
+        - KHỚP NHẦM vì hai từ khác nghĩa ra cùng một chuỗi: "xây dựng" và
+          "gia dụng" cùng thành `dung`, nên một cửa hàng vật liệu xây dựng
+          (Showroom Gạch ốp lát) được giữ cho từ khoá "gia dụng thông minh" và
+          "túi xách phụ kiện".
+        - MẤT HẾT từ có nghĩa: `quần` thành `quan` (trùng với "quán", đã nằm
+          trong danh sách từ vô nghĩa), `áo`/`mẹ`/`bé` ngắn hơn ngưỡng 3 ký tự.
+          Từ khoá "Shop mẹ và bé" ra TẬP RỖNG, nhãn "Cửa hàng quần áo nữ" cũng rỗng
+          nên bị coi là nhãn vô nghĩa — mọi cửa hàng quần áo đều phải đưa cho AI,
+          còn không có AI thì được giữ hết không lọc gì.
+
+    `ung_vien` phân biệt hai phía của phép so, vì dấu chỉ nên "nới" theo MỘT chiều:
+    nhãn Google và tên doanh nghiệp (ứng viên) hay viết không dấu, còn từ khoá
+    người dùng gõ có dấu thì chỉ cần khớp đúng dấu. Phía từ khoá đánh thêm dấu
+    `~` để so với ứng viên không dấu mà KHÔNG khớp nhầm với ứng viên có dấu khác.
+    """
+    if not value:
         return set()
     ra: set[str] = set()
-    dem: list[str] = []
-    for ch in folded:
-        if ch.isalnum():
-            dem.append(ch)
-        elif dem:
-            ra.add("".join(dem))
-            dem = []
-    if dem:
-        ra.add("".join(dem))
-    # Bỏ từ vô nghĩa và từ quá ngắn (thường là "1", "a", phụ tố phiên âm).
-    return {_goc(t) for t in ra if len(t) > 2 and t not in VO_NGHIA}
+    for tho in _TACH.split(unicodedata.normalize("NFC", value).lower()):
+        if not tho:
+            continue
+        if _la_latinh_co_dau(tho):
+            if tho in VO_NGHIA_DAU or len(tho) < 2:
+                continue
+            thuong = "".join(c for c in fold_text(tho) if c.isalnum())
+            ra.add(tho)
+            # Ứng viên có dấu cũng được so với từ khoá KHÔNG dấu (người dùng gõ
+            # "quan ao"); từ khoá có dấu thì chỉ so với ứng viên không dấu.
+            ra.add(thuong if ung_vien else "~" + thuong)
+            continue
+        # Đường cũ, giữ nguyên hành vi.
+        folded = fold_text(tho)
+        dem: list[str] = []
+        manh: list[str] = []
+        for ch in folded + " ":
+            if ch.isalnum():
+                dem.append(ch)
+            elif dem:
+                manh.append("".join(dem))
+                dem = []
+        for t in manh:
+            if len(t) > 2 and t not in VO_NGHIA:
+                g = _goc(t)
+                ra.add(g)
+                if ung_vien:
+                    ra.add("~" + g)
+    return ra
 
 
 def _goc(tu: str) -> str:
@@ -175,6 +247,17 @@ def trong_chuoi_cung_ung(*phan: str | None) -> bool:
     return any(tu in fold_text(x) for x in phan if x for tu in CHUOI_CUNG_UNG)
 
 
+def _bang_chung_manh(chung: set[str]) -> bool:
+    """Phần chung giữa nhãn và danh mục có đủ mạnh để tự quyết không.
+
+    Mạnh khi có MỘT chữ từ 3 ký tự trở lên, hoặc từ HAI chữ khác nhau trở lên.
+    Dấu `~` chỉ là cách đánh dấu phía so không dấu, bỏ đi trước khi đếm — nếu
+    không thì "mỹ" và "~my" bị đếm thành hai chữ.
+    """
+    goc = {t.lstrip("~") for t in chung}
+    return len(goc) >= 2 or any(len(t) >= 3 for t in goc)
+
+
 def cham(
     category: str | None,
     name: str | None,
@@ -201,16 +284,25 @@ def cham(
     if not (category or "").strip():
         return None
 
-    if tach_tu(category) & moc:
-        # Nhãn ngành nghề khớp thẳng danh mục — bằng chứng mạnh nhất có được,
-        # không cần hỏi ai thêm.
-        return LIEN_QUAN
+    chung = tach_tu(category, ung_vien=True) & moc
+    if chung:
+        if _bang_chung_manh(chung):
+            # Nhãn ngành nghề khớp danh mục bằng chứng đủ mạnh — không cần hỏi
+            # ai thêm.
+            return LIEN_QUAN
+        # Khớp bằng ĐÚNG MỘT chữ ngắn ("mỹ", "áo", "bé"): quá yếu để tự quyết.
+        # Đo trên dữ liệu thật: "Thẩm mỹ viện" khớp từ khoá "mỹ phẩm" chỉ vì chung
+        # chữ "mỹ" — một thẩm mỹ viện không phải cửa hàng mỹ phẩm, và AI cũng
+        # loại. Chữ 2 ký tự có dấu là thứ mới được tính (trước đây bị bỏ hết),
+        # nên phải có thêm lớp chặn này; đẩy sang AI chứ không loại, vì "Cửa hàng
+        # áo thun" cũng khớp "quần áo" bằng đúng một chữ ngắn mà là lead thật.
+        return RANH_GIOI
     if nhan_chung_chung(category):
         # Nhãn không nói gì về mặt hàng. Loại thẳng là vứt oan
         # `Battambang Agro Industry Co., Ltd.` (nhãn "Company"); giữ thẳng là
         # mời mọi "General store" vào bảng. Cả hai đều sai — phải nhìn kỹ hơn.
         return RANH_GIOI
-    if tach_tu(name) & moc:
+    if tach_tu(name, ung_vien=True) & moc:
         # Nhãn ngành RÕ RÀNG là thứ khác, chỉ có mỗi cái tên dính. Đủ để nghi,
         # không đủ để kết luận: "Rahim Fruits Stall" (nhãn "Cửa hàng") là thật,
         # còn "Dress store"/"Book store" thì không.
