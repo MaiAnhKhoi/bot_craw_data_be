@@ -91,3 +91,44 @@ def test_danh_muc_chot_mot_lan_luc_tao_job(service):
 
     nguon = inspect.getsource(mod.JobService.create)
     assert 'params["category_map"] = self._danh_muc(' in nguon
+
+
+# ------------------------------------- nước ngoài mà chưa dịch từ khoá thì chặn
+
+
+def test_nuoc_ngoai_chua_dich_thi_bi_chan():
+    """Không có AI thì nước ngoài nhận ĐỒNG THỜI hai thứ hỏng: từ khoá sai ngôn
+    ngữ, và không có bộ lọc nào (thiếu danh mục thì luật cứng ghi hết).
+
+    Đã tái hiện bằng cách chạy thật với khoá AI để trống: Thái Lan nhận truy vấn
+    "Cửa hàng trái cây nhập khẩu Bangkok, Thailand" và danh mục chốt chỉ có `VN`.
+    """
+    from app.modules.scraper.job.service import nuoc_chua_dich_tu_khoa
+
+    tv = _tv("th", "vn")
+    # Không có mục nào cho TH.
+    assert nuoc_chua_dich_tu_khoa(["vựa trái cây"], {}, tv) == ["TH"]
+    # Có mục nhưng GIỐNG HỆT từ khoá gốc — dạng giao diện gửi lên khi AI tắt/lỗi.
+    assert nuoc_chua_dich_tu_khoa(["vựa trái cây"], {"TH": ["Vựa  Trái Cây"]}, tv) == ["TH"]
+
+
+def test_da_dich_roi_thi_khong_chan():
+    from app.modules.scraper.job.service import nuoc_chua_dich_tu_khoa
+
+    tv = _tv("th", "vn")
+    assert nuoc_chua_dich_tu_khoa(["vựa trái cây"], {"th": ["ตลาดผลไม้"]}, tv) == []
+
+
+def test_chi_viet_nam_thi_khong_can_dich():
+    from app.modules.scraper.job.service import nuoc_chua_dich_tu_khoa
+
+    assert nuoc_chua_dich_tu_khoa(["vựa trái cây"], {}, _tv("vn")) == []
+    assert nuoc_chua_dich_tu_khoa(["vựa trái cây"], None, []) == []
+
+
+def test_chan_dung_nuoc_chua_dich_chu_khong_chan_ca_job():
+    """Job nhiều nước mà chỉ một nước thiếu thì chỉ nêu đúng nước đó."""
+    from app.modules.scraper.job.service import nuoc_chua_dich_tu_khoa
+
+    tv = _tv("th", "jp", "vn")
+    assert nuoc_chua_dich_tu_khoa(["vựa trái cây"], {"TH": ["ตลาดผลไม้"]}, tv) == ["JP"]

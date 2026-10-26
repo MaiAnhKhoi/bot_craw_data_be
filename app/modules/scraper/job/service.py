@@ -92,6 +92,40 @@ def rate_per_min(job: ScrapeJob) -> float | None:
     return round(job.done_places / minutes, 2)
 
 
+def nuoc_chua_dich_tu_khoa(
+    keywords: list[str],
+    keyword_map: dict[str, list[str]] | None,
+    queries: list[ExpandedQuery],
+) -> list[str]:
+    """Mã những nước NGOÀI Việt Nam sẽ bị tìm bằng đúng từ khoá tiếng Việt gốc.
+
+    Việt Nam dùng thẳng từ khoá gốc nên bị loại khỏi phép kiểm. Một nước ngoài
+    được coi là CHƯA DỊCH khi không có mục riêng trong `keyword_map`, hoặc mục đó
+    giống hệt từ khoá gốc — đó chính là dạng giao diện gửi lên khi AI tắt hoặc
+    lỗi (dòng `fallback` mang nguyên từ khoá gốc).
+
+    Vì sao phải chặn thay vì để chạy: không có AI thì nước ngoài nhận ĐỒNG THỜI
+    hai thứ hỏng. Đo lại bằng cách chạy thật với khoá AI để trống:
+
+        Cửa hàng trái cây nhập khẩu Bangkok, Thailand   (gl=th, tiếng Việt!)
+        danh mục ngành nghề chốt cho job: {'VN': [...]}  — KHÔNG có 'TH'
+
+    tức là từ khoá sai ngôn ngữ và KHÔNG CÓ BỘ LỌC nào (thiếu danh mục thì luật
+    cứng trả None = ghi hết). Dữ liệu lệch xa từ khoá mà không có dòng cảnh báo
+    nào trên trang — cảnh báo duy nhất nằm ở màn dịch, mất ngay khi bấm tạo job.
+    """
+    goc = {" ".join(k.split()).lower() for k in keywords if k and k.strip()}
+    ban_do = {(m or "").upper(): v for m, v in (keyword_map or {}).items()}
+    chua: list[str] = []
+    for ma in dict.fromkeys(q.gl.upper() for q in queries if q.gl):
+        if ma == "VN":
+            continue
+        rieng = {" ".join(k.split()).lower() for k in ban_do.get(ma, []) if k and k.strip()}
+        if not rieng or rieng == goc:
+            chua.append(ma)
+    return chua
+
+
 class JobService:
     """Transaction nằm ở đây: router không commit, repository không commit."""
 
@@ -108,6 +142,19 @@ class JobService:
         )
         if not queries:
             raise AppError("Cần ít nhất một từ khoá hợp lệ", code="VALIDATION_ERROR", status_code=422)
+        chua_dich = nuoc_chua_dich_tu_khoa(payload.keywords, payload.keyword_map, queries)
+        if chua_dich:
+            ten = ", ".join(
+                f"{(geo.country_name(ma) or ma)} ({ma})" for ma in chua_dich
+            )
+            raise AppError(
+                f"Chưa có từ khoá bản địa cho: {ten}. Từ khoá tiếng Việt ở nước ngoài "
+                "gần như không ra kết quả đúng nơi, và nước đó cũng không có bộ lọc "
+                "ngành nghề nào. Bấm \"Gợi ý từ khoá bản địa\" (cần bật khoá AI), hoặc "
+                "tự sửa từ khoá của từng nước thành tiếng địa phương rồi tạo lại job.",
+                code="KEYWORDS_NOT_LOCALIZED",
+                status_code=422,
+            )
         params = payload.model_dump()
         params["category_map"] = self._danh_muc(payload, queries)
         job = self.repo.add(
