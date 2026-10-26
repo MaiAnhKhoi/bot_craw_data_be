@@ -514,3 +514,102 @@ def test_ten_dinh_chuoi_cung_ung_thi_khong_loai_thang():
     assert cham("Manufacturer", "Sunrise Food Trading", NGANH_IN) == RANH_GIOI
     # Vẫn không kéo theo doanh nghiệp ngoài ngành.
     assert cham("Manufacturer", "Sunrise Plastic Works", NGANH_IN) == NGHI_RAC
+
+
+# ------------------------------------------- tiếng Việt: bộ tách từ giữ dấu
+#
+# Mọi ví dụ dưới đây lấy từ job thật chạy trên 20-70 từ khoá tiếng Việt (thời
+# trang, mỹ phẩm, thú cưng, phần mềm...). Bộ tách từ cũ viết cho tiếng Anh/Hindi
+# của job trái cây và CHƯA TỪNG được kiểm trên từ vựng tiếng Việt.
+
+
+def test_bo_dau_lam_hai_tu_khac_nghia_thanh_mot():
+    """"xây dựng" và "gia dụng" cùng thành `dung` khi bỏ dấu.
+
+    Hậu quả đo được: một cửa hàng vật liệu xây dựng (Showroom Gạch ốp lát) được
+    luật cứng GIỮ cho từ khoá "gia dụng thông minh" và "túi xách phụ kiện" — rác
+    lọt qua mà không ai hỏi AI.
+    """
+    ket_qua = cham(
+        "Cửa hàng vật liệu xây dựng",
+        "Showroom Gạch ốp lát - Thiết bị vệ sinh",
+        ["Cửa hàng gia dụng thông minh"],
+    )
+    assert ket_qua == NGHI_RAC
+
+
+def test_tu_ngan_co_dau_khong_con_bi_nuot():
+    """`quần` thành `quan` (trùng "quán", đã là từ vô nghĩa), `áo`/`mẹ`/`bé` ngắn
+    hơn ngưỡng 3 ký tự.
+
+    Hậu quả đo được: từ khoá "Shop mẹ và bé" ra TẬP RỖNG, nên mọi nhãn đều bị coi
+    là không có căn cứ so sánh.
+    """
+    assert tach_tu("Shop mẹ và bé") >= {"mẹ", "bé"}
+    assert {"quần", "áo"} <= tach_tu("Shop quần áo thiết kế")
+
+
+def test_nhan_quan_ao_khong_con_bi_coi_la_vo_nghia():
+    """Nhãn "Cửa hàng quần áo nữ" cũ ra tập rỗng nên bị coi là nhãn vô nghĩa.
+
+    Hậu quả: MỌI cửa hàng quần áo đều đẩy sang AI (25% số thẻ của job thật) — và
+    khi AI tắt thì được giữ hết, không lọc gì.
+    """
+    assert nhan_chung_chung("Cửa hàng quần áo nữ") is False
+    assert nhan_chung_chung("Cửa hàng") is True  # vẫn đúng với nhãn trống nghĩa
+
+
+def test_cua_hang_quan_ao_khong_bi_loai_oan():
+    """Ba cửa hàng quần áo thật bị luật cũ LOẠI THẲNG: ICONDENIM, Mr. Simple Store,
+    và `Shop Mẹ Và Bé` — trùng nguyên tên từ khoá — vì "mẹ", "bé" bị coi là ngắn.
+    """
+    assert (
+        cham("Cửa hàng quần áo nam", "ICONDENIM Sư Vạn Hạnh", ["Shop quần áo thiết kế"])
+        == LIEN_QUAN
+    )
+    assert (
+        cham("Cửa hàng mẹ và bé", "Cửa hàng mẹ và bé MẸ BẮP", ["Shop mẹ và bé"])
+        == LIEN_QUAN
+    )
+    # Nhãn khác hẳn nhưng TÊN trùng từ khoá: hỏi AI chứ không loại.
+    assert cham("Cửa hàng trẻ em", "Shop Mẹ Và Bé", ["Shop mẹ và bé"]) != NGHI_RAC
+
+
+def test_khop_bang_mot_chu_ngan_thi_chua_du_de_tu_quyet():
+    """Chữ 2 ký tự có dấu là thứ MỚI được tính, nên cần lớp chặn riêng.
+
+    "Thẩm mỹ viện" khớp từ khoá "mỹ phẩm" chỉ vì chung chữ `mỹ` — một thẩm mỹ viện
+    không phải cửa hàng mỹ phẩm, và AI cũng loại. Nhưng không loại thẳng vì
+    "Cửa hàng áo thun" cũng khớp "quần áo" bằng đúng một chữ ngắn mà là lead thật.
+    """
+    assert (
+        cham("Thẩm mỹ viện", "Thẩm Mỹ Viện Ngọc Hường", ["Cửa hàng mỹ phẩm chính hãng"])
+        == RANH_GIOI
+    )
+    assert cham("Cửa hàng áo thun", "Blazy Fashion", ["Shop quần áo thiết kế"]) == RANH_GIOI
+
+
+def test_tu_chi_loai_va_quang_cao_khong_phai_bang_chung():
+    """"đồ" (đồ gia dụng, đồ chơi) và "chính hãng" gắn vào tên đủ mọi ngành, nên
+    không được để hai ngành chẳng liên quan khớp nhau chỉ vì chung những chữ đó.
+    """
+    assert cham("Cửa hàng đồ gia dụng", "Minh Long", ["Cửa hàng đồ chơi trẻ em"]) == NGHI_RAC
+    assert "đồ" not in tach_tu("Cửa hàng đồ chơi")
+    assert "chính" not in tach_tu("mỹ phẩm chính hãng")
+
+
+def test_ung_vien_khong_dau_van_khop_tu_khoa_co_dau():
+    """Tên doanh nghiệp hay viết không dấu, từ khoá người dùng gõ có dấu.
+
+    Dấu chỉ nên "nới" một chiều: ứng viên không dấu khớp được từ khoá có dấu,
+    nhưng ứng viên có dấu KHÁC thì không (đó là lỗi "xây dựng"/"gia dụng").
+    """
+    assert tach_tu("Thiet ke website", ung_vien=True) & tach_tu("Công ty thiết kế website")
+    assert not (tach_tu("xây dựng", ung_vien=True) & tach_tu("gia dụng"))
+
+
+def test_tieng_anh_va_hindi_khong_doi_hanh_vi():
+    """Job trái cây đã đo kỹ ở các lượt trước — sửa tiếng Việt không được đụng nó."""
+    assert tach_tu("Fruits wholesaler") == {"fruit", "wholesaler"}
+    assert tach_tu("Fruit and vegetable store") == {"fruit", "vegetable"}
+    assert tach_tu("फल थोक विक्रेता")  # vẫn phiên âm ra chữ Latinh như cũ
