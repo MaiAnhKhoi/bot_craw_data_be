@@ -142,19 +142,20 @@ class JobService:
         )
         if not queries:
             raise AppError("Cần ít nhất một từ khoá hợp lệ", code="VALIDATION_ERROR", status_code=422)
-        chua_dich = nuoc_chua_dich_tu_khoa(payload.keywords, payload.keyword_map, queries)
-        if chua_dich:
-            ten = ", ".join(
-                f"{(geo.country_name(ma) or ma)} ({ma})" for ma in chua_dich
-            )
-            raise AppError(
-                f"Chưa có từ khoá bản địa cho: {ten}. Từ khoá tiếng Việt ở nước ngoài "
-                "gần như không ra kết quả đúng nơi, và nước đó cũng không có bộ lọc "
-                "ngành nghề nào. Bấm \"Gợi ý từ khoá bản địa\" (cần bật khoá AI), hoặc "
-                "tự sửa từ khoá của từng nước thành tiếng địa phương rồi tạo lại job.",
-                code="KEYWORDS_NOT_LOCALIZED",
-                status_code=422,
-            )
+        if get_settings().require_localized_keywords:
+            chua_dich = nuoc_chua_dich_tu_khoa(payload.keywords, payload.keyword_map, queries)
+            if chua_dich:
+                ten = ", ".join(
+                    f"{(geo.country_name(ma) or ma)} ({ma})" for ma in chua_dich
+                )
+                raise AppError(
+                    f"Chưa có từ khoá bản địa cho: {ten}. Từ khoá tiếng Việt ở nước ngoài "
+                    "gần như không ra kết quả đúng nơi, và nước đó cũng không có bộ lọc "
+                    "ngành nghề nào. Bấm \"Gợi ý từ khoá bản địa\" (cần bật khoá AI), hoặc "
+                    "tự sửa từ khoá của từng nước thành tiếng địa phương rồi tạo lại job.",
+                    code="KEYWORDS_NOT_LOCALIZED",
+                    status_code=422,
+                )
         params = payload.model_dump()
         params["category_map"] = self._danh_muc(payload, queries)
         job = self.repo.add(

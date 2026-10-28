@@ -88,6 +88,11 @@ class Settings(BaseSettings):
     ai_model: str = "claude-haiku-4-5"
     ai_max_keywords: int = 4
     ai_max_countries: int = 40      # trần số quốc gia cho một lần gọi
+    # Chốt chặn lúc TẠO JOB: có nước ngoài mà từ khoá nước đó chưa dịch (không có
+    # mục riêng, hoặc còn nguyên từ khoá tiếng Việt) thì từ chối tạo. Tắt mặc định
+    # vì khi người dùng tự dịch — gõ thẳng từ khoá bản địa vào ô từ khoá, không qua
+    # `keyword_map` — chốt này chặn oan chính những job đã đúng ngôn ngữ.
+    require_localized_keywords: bool = False
 
     # --- tầng AI chấm lại những ca ranh giới lúc quét ---
     #
