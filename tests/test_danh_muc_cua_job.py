@@ -132,3 +132,81 @@ def test_chan_dung_nuoc_chua_dich_chu_khong_chan_ca_job():
 
     tv = _tv("th", "jp", "vn")
     assert nuoc_chua_dich_tu_khoa(["vựa trái cây"], {"TH": ["ตลาดผลไม้"]}, tv) == ["JP"]
+
+
+# ------------------------------------------- công tắc bật/tắt chốt chặn lúc tạo job
+
+
+@pytest.fixture
+def tao_job(service, monkeypatch):
+    """`JobService.create` chạy thật, chỉ thay phần chạm DB bằng bản giả.
+
+    Kho giả trả lại đúng cái job được thêm vào, và `JobResponse.of` được thay để
+    trả luôn job đó — ta chỉ cần xem job có ĐƯỢC TẠO hay bị từ chối, không cần
+    dựng cả dòng DB.
+    """
+    from types import SimpleNamespace
+
+    from app.modules.scraper.job import service as mod
+
+    class KhoGia:
+        def add(self, job):  # noqa: ANN001, ANN201
+            return job
+
+        def add_queries(self, job_id, queries):  # noqa: ANN001, ANN201
+            pass
+
+    class DbGia:
+        def commit(self) -> None:
+            pass
+
+        def refresh(self, obj) -> None:  # noqa: ANN001
+            pass
+
+    service.repo = KhoGia()
+    service.db = DbGia()
+    monkeypatch.setattr(mod, "JobResponse", SimpleNamespace(of=lambda job, rate=None: job))
+
+    def dat_cong_tac(bat: bool) -> None:
+        monkeypatch.setattr(
+            mod, "get_settings", lambda: SimpleNamespace(require_localized_keywords=bat)
+        )
+
+    def tao(**kw):  # noqa: ANN003, ANN202
+        return service.create(
+            JobCreateRequest(name="t", keywords=["ตลาดผลไม้"], locations=["Bangkok, Thailand"], **kw)
+        )
+
+    return SimpleNamespace(dat_cong_tac=dat_cong_tac, tao=tao)
+
+
+def test_mac_dinh_TAT_chot_chan_vi_nguoi_dung_tu_dich():
+    """Người dùng tự gõ từ khoá bản địa thẳng vào ô từ khoá thì `keyword_map` trống.
+
+    Với chốt bật, đúng những job ấy bị coi là "chưa dịch" và bị chặn oan.
+    """
+    from app.core.config import Settings
+
+    assert Settings.model_fields["require_localized_keywords"].default is False
+
+
+def test_tat_chot_thi_job_nuoc_ngoai_khong_co_keyword_map_van_tao_duoc(tao_job):
+    tao_job.dat_cong_tac(False)
+    job = tao_job.tao()
+    assert job.total_queries == 1
+    assert "Thailand" in job.params["locations"][0]
+
+
+def test_bat_chot_thi_van_chan_nhu_cu(tao_job):
+    from app.core.exceptions import AppError
+
+    tao_job.dat_cong_tac(True)
+    with pytest.raises(AppError) as loi:
+        tao_job.tao()
+    assert loi.value.code == "KEYWORDS_NOT_LOCALIZED"
+
+
+def test_bat_chot_ma_da_dich_thi_qua(tao_job):
+    tao_job.dat_cong_tac(True)
+    job = tao_job.tao(keyword_map={"TH": ["fruit wholesaler"]})
+    assert job.total_queries == 1
